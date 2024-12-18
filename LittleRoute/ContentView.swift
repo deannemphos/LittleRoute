@@ -18,38 +18,41 @@ struct ContentView: View {
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
     var body: some View {
-        VStack {
-            
-            // Map!
-            Map() {
+        ZStack {
+            VStack {
                 
-            }
-            .frame(width: 300, height: 300)
-            .cornerRadius(c_radius)
-            .padding()
-            
-            // Location info
-            LazyVStack {
-                
-            }
-            .background(.black)
-            .padding()
-            .cornerRadius(c_radius)
-            
-            // Music bar
-            HStack {
-                Button {
-                    paused = !paused // @TODO -- make this play/pause the music
-                } label: {
-                    Image(systemName: paused ? "pause.fill" : "play.fill")
-                        .imageScale(.large)
+                // Map!
+                Map() {
+                    
                 }
-                ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
+                .frame(width: 300, height: 300)
+                .cornerRadius(c_radius)
+                .padding()
+                
+                // Location info
+                LazyVStack {
+                    
+                }
+                .background(.black)
+                .padding()
+                .cornerRadius(c_radius)
+                
+                // Music bar
+                HStack {
+                    Button {
+                        paused = !paused // @TODO -- make this play/pause the music
+                    } label: {
+                        Image(systemName: paused ? "pause.fill" : "play.fill")
+                            .imageScale(.large)
+                    }
+                    ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
+                }
+                .padding()
             }
-            .padding()
+            // Set background color
+            Color("PrimaryColor").ignoresSafeArea(edges: .all)
+                .zIndex(-1.0)
         }
-        .background(.black)
-        .ignoresSafeArea(edges: .all)
     }
 }
 
