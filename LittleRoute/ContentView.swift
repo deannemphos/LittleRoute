@@ -50,7 +50,7 @@ struct ContentView: View {
                 .padding()
             }
             // Set background color
-            Color("primary").ignoresSafeArea(edges: .all)
+            Color("Background").ignoresSafeArea(edges: .all)
                 .zIndex(-1.0)
         }
     }
