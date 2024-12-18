@@ -7,51 +7,49 @@
 
 import SwiftUI
 import SwiftData
+import MapKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var items: [Item]
-
+    
+    @State private var paused: Bool = false
+    
+    let c_radius: CGFloat = 20.0 // corner radius for consistency
+    
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
+        VStack {
+            
+            // Map!
+            Map() {
+                
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+            .frame(width: 300, height: 300)
+            .cornerRadius(c_radius)
+            .padding()
+            
+            // Location info
+            LazyVStack {
+                
             }
-        } detail: {
-            Text("Select an item")
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+            .background(.black)
+            .padding()
+            .cornerRadius(c_radius)
+            
+            // Music bar
+            HStack {
+                Button {
+                    paused = !paused // @TODO -- make this play/pause the music
+                } label: {
+                    Image(systemName: paused ? "pause.fill" : "play.fill")
+                        .imageScale(.large)
+                }
+                ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
             }
+            .padding()
         }
+        .background(.black)
+        .ignoresSafeArea(edges: .all)
     }
 }
 
