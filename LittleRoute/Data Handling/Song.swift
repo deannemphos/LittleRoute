@@ -17,8 +17,8 @@ final class Song {
     init(title: String, location: String, populationMin: Int?, populationMax: Int?) {
         self.title = title
         self.location = location
-        self.populationMin = populationMin ?? <#default value#>
-        self.populationMax = populationMax!
+        self.populationMin = populationMin ?? self.populationMin // if no value is provided, default to 0
+        self.populationMax = populationMax ?? self.populationMax // ""
     }
 }
 
