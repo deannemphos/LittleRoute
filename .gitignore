@@ -60,3 +60,9 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# The mp3 files are getting ignored here.
+#
+# Mostly just to prevent any issues with infringement while I use test files
+# Assume any files here are .mp3s unless stated otheriwse in the documentation
+LittleRoute/Music/
