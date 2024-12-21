@@ -65,4 +65,10 @@ fastlane/test_output
 #
 # Mostly just to prevent any issues with infringement while I use test files
 # Assume any files here are .mp3s unless stated otheriwse in the documentation
+# Honestly idk why this wasn't working so I added a bunch of extras
+#  will fix later I guess it's late and I'm tired
+/LittleRoute/Music
+/LittleRoute/Music/
 LittleRoute/Music/
+/Music/
+Music/
