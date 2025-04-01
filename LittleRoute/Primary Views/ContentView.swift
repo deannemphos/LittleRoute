@@ -13,7 +13,6 @@ import AVFoundation
 struct ContentView: View {
 
     @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
 
     private var audioPlayer: AVAudioPlayer?
     @State private var paused: Bool = false
@@ -75,7 +74,10 @@ struct ContentView: View {
     
 }
 
+// MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled
+/*
 #Preview {
     ContentView()
         .modelContainer(for: Item.self, inMemory: true)
 }
+*/
