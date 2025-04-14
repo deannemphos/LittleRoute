@@ -51,14 +51,23 @@ struct ContentView: View {
                 // Music bar
                 HStack {
 
-
+                    // Previous Button
+                    Button {
+                        loadAudio(fileName: "RSEmart")
+                        
+                    } label: {
+                        Image(systemName: "backward.fill") // @TODO -- implement previous song functionality
+                            .imageScale(.large)
+                    }
+                    
+                    // Play/Pause Button
                     Button {
                         
                         currentSong == nil ? currentSong = songs.first : () // Play the first song in the list if nothing is currently queued
                         
                         // TEMP FOR TESTING ONLY:
                         currentSong == nil ? currentSong = sampleSong : ()
-                        loadAudio(fileName: "RSEmart")
+                        // loadAudio(fileName: "RSEmart")
                         
                         paused = !paused
                         musicPlayPause()
@@ -69,6 +78,14 @@ struct ContentView: View {
                     ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
                 }
                 .padding()
+                
+                // Skip Button
+                Button {
+                    // loadAudio(fileName: songs) // @TODO -- add in skip functionality
+                } label: {
+                    Image(systemName: "forward.fill")
+                        .imageScale(.large)
+                }
 
                 VStack {
                     Text(currentSong?.title ?? "No song playing")
