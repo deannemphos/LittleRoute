@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var songLength: TimeInterval = 0.0   // total length of the song
     @State private var currentTime: TimeInterval = 0.0  // current playback time
 
+    
     @State private var currentSong: Song? = nil // the currently playing song, if any
    
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
@@ -100,6 +101,8 @@ struct ContentView: View {
         }
     }
     
+    
+    // MARK: Audio Functions
     // Play the music if not paused, pause the music if paused. ezpz
     private func musicPlayPause() {
         if audioPlayer != nil && audioPlayer!.isPlaying {
@@ -112,6 +115,7 @@ struct ContentView: View {
         }
     }
     
+    // Prepare the audio player with the selected song
     private func loadAudio(fileName: String) {
         guard let path = Bundle.main.path(forResource: fileName, ofType: "mp3", inDirectory: "Music") else {
             print("Could not find file: \(fileName).mp3")
@@ -129,7 +133,20 @@ struct ContentView: View {
         }
     }
     
-    // Get current
+    // MARK: Song Database Functions
+    // Insert a new song
+    private func addSong(title: String, artist: String, modelContext: ModelContext) {
+        let newSong = Song(title: title, songName: "filename", artist: artist, locations: ["location"], populationMin: 0, populationMax: 9999)
+        modelContext.insert(newSong)
+        try? modelContext.save()
+    }
+
+    // Remove an existing song
+    private func removeSong(_ song: Song, modelContext: ModelContext) {
+        modelContext.delete(song)
+        try? modelContext.save()
+    }
+    
     
 }
 
