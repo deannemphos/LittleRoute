@@ -135,6 +135,7 @@ struct ContentView: View {
     
     // MARK: Song Database Functions
     // Insert a new song
+    // @TODO: Add field for uploading .mp3 files
     private func addSong(title: String, artist: String, modelContext: ModelContext) {
         let newSong = Song(title: title, songName: "filename", artist: artist, locations: ["location"], populationMin: 0, populationMax: 9999)
         modelContext.insert(newSong)
