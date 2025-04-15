@@ -17,7 +17,8 @@ struct ContentView: View {
     @Query private var songs: [Song] // Query all songs from the database
 
     @State private var audioPlayer: AVAudioPlayer?
-    @State private var paused: Bool = false
+    @State private var isPaused: Bool = false
+    @State private var isShuffled: Bool = false
     @State private var songLength: TimeInterval = 0.0   // total length of the song
     @State private var currentTime: TimeInterval = 0.0  // current playback time
 
@@ -70,10 +71,10 @@ struct ContentView: View {
                         currentSong == nil ? currentSong = sampleSong : ()
                         // loadAudio(fileName: "RSEmart")
                         
-                        paused = !paused
+                        isPaused.toggle()
                         musicPlayPause()
                     } label: {
-                        Image(systemName: paused ? "pause.fill" : "play.fill")
+                        Image(systemName: isPaused ? "pause.fill" : "play.fill")
                             .imageScale(.large)
                     }
                     ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
@@ -107,11 +108,11 @@ struct ContentView: View {
     private func musicPlayPause() {
         if audioPlayer != nil && audioPlayer!.isPlaying {
             audioPlayer!.pause()
-            paused = !paused
+            isPaused.toggle()
         }
         else if audioPlayer != nil && !audioPlayer!.isPlaying {
             audioPlayer!.play()
-            paused = !paused
+            isPaused.toggle()
         }
     }
     
