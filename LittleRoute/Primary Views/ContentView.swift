@@ -24,6 +24,7 @@ struct ContentView: View {
 
     @State private var currentContext: Context = .all
     @State private var currentSong: Song? = nil // the currently playing song, if any
+    @State private var songQueue: [Song] = []
    
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
     let c_radius: CGFloat = 20.0 // corner radius for consistency
@@ -111,6 +112,14 @@ struct ContentView: View {
                         .font(.title)
                         .padding()
                     Text(currentSong?.artist ?? "No artist")
+                    
+                    Button {
+                        isShuffled.toggle()
+                        
+                    }
+                    label: {
+                        Image(systemName: isShuffled ? "shuffle.circle.fill" : "shuffle.circle")
+                    }
                 }
             }
             // Set background color
@@ -166,7 +175,36 @@ struct ContentView: View {
         try? modelContext.save()
     }
     
+    // Reset the queue upon entering a new location/context
+    private func reloadQueue(newContext: String, shuffle: Bool) {
+        
+        songQueue.removeAll()
+        
+        // add only the new songs to the queue
+        songQueue = songs.filter { $0.locations.contains(newContext) }
+        
+        // shuffle if user has the option toggled
+        if isShuffled {
+            songQueue.shuffle()
+        }
+        
+        // @TODO: change the default song from RSEmart to something else
+        loadAudio(fileName: songQueue.first?.songName ?? "RSEmart")
+        
+    }
     
+    // Toggle shuffle mode
+    // Technically we can just call reloadQueue instead of this but it'll save an unnecessary full list reset
+    // and slightly reduce lag if the user reshuffles
+    private func toggleShuffle() {
+        isShuffled.toggle()
+        
+        if(isShuffled) {
+            songQueue.shuffle()
+        } else {
+            reloadQueue(newContext: currentContext.rawValue, shuffle: isShuffled)
+        }
+    }
 }
 
 // MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled
