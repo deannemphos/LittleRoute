@@ -22,12 +22,29 @@ struct ContentView: View {
     @State private var songLength: TimeInterval = 0.0   // total length of the song
     @State private var currentTime: TimeInterval = 0.0  // current playback time
 
-    
+    @State private var currentContext: Context = .all
     @State private var currentSong: Song? = nil // the currently playing song, if any
    
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
+    // all contexts the music will account for
+    enum Context: String {
+        case all = "All"
+        case gym = "Gyms"
+        case restaurant = "Restaurants"
+        case store = "Stores"
+        case park = "Parks"
+        case home = "Home"
+        case work = "Work"
+        case street = "Streets"
+        case driving = "Driving"
+        case beach = "Beaches"
+        case mountain = "Mountains"
+        case city = "Cities"
+        case town = "Towns"
+        case water = "Water"
+    }
 
     var body: some View {
 
