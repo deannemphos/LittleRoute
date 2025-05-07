@@ -30,6 +30,11 @@ final class Song {
         self.populationMin = populationMin ?? self.populationMin // if no value is provided, default to 0
         self.populationMax = populationMax ?? self.populationMax // ""
     }
+    
+    // remove class from memory
+    deinit {
+        // only run this when the user deletes a song
+    }
 }
 
 
