@@ -13,7 +13,9 @@ import AVFoundation
 struct ContentView: View {
 
     @Environment(\.modelContext) private var modelContext
-
+    
+    @StateObject private var audioManager = AudioPlayerManager.shared
+    
     @Query private var songs: [Song] // Query all songs from the database
 
     @State private var audioPlayer: AVAudioPlayer?
