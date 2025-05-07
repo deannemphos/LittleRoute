@@ -142,6 +142,20 @@ struct ContentView: View {
         }
     }
     
+    private func skip() {
+        
+        // find next song in queue
+        let nextSong = songs.first?.songName ?? "RSEmart"
+        
+        // load audio for song
+        loadAudio(fileName: nextSong)
+    }
+    
+    private func previous() {
+        
+    }
+
+    
     // Prepare the audio player with the selected song
     private func loadAudio(fileName: String) {
         guard let path = Bundle.main.path(forResource: fileName, ofType: "mp3", inDirectory: "Music") else {
