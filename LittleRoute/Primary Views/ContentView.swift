@@ -24,6 +24,7 @@ struct ContentView: View {
 
     @State private var currentContext: Context = .all
     @State private var currentSong: Song? = nil // the currently playing song, if any
+    @State private var currentIndex: Int = 0 // index of the current song in the queue
     @State private var songQueue: [Song] = []
    
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
@@ -51,6 +52,32 @@ struct ContentView: View {
 
         ZStack {
             VStack {
+               
+                // Top bar
+                HStack {
+                    Button {
+                        // Settings button
+                    } label: {
+                        Image(systemName: "gearshape.fill")
+                    }
+                    .padding()
+                    
+                    Spacer()
+                    Text("LittleRoute")
+                        .font(.largeTitle)
+                        .padding()
+                    Spacer()
+                    Button {
+                        // Add song button
+                        addSong(title: "New Song", artist: "New Artist", modelContext: modelContext)
+                        
+                        // TEMP
+                        print(songs)
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                    .padding()
+                }
                 
                 // Map!
                 Map() {
@@ -129,7 +156,8 @@ struct ContentView: View {
     }
     
     
-    // MARK: Audio Functions
+    
+    // MARK: Audio Playback Functions
     // Play the music if not paused, pause the music if paused. ezpz
     private func musicPlayPause() {
         if audioPlayer != nil && audioPlayer!.isPlaying {
@@ -143,21 +171,39 @@ struct ContentView: View {
     }
     
     private func skip() {
+        // let nextSong = songs.first?.songName ?? "RSEmart"
         
-        // find next song in queue
-        let nextSong = songs.first?.songName ?? "RSEmart"
+        guard !songQueue.isEmpty else {
+            print("No songs in queue")
+            return
+        }
         
-        // load audio for song
+        // Set the current index to the next song in the queue
+        // if on the last song, loop back to the start of the queue
+        let nextSong = songQueue[(currentIndex + 1) % songQueue.count].songName
+        
         loadAudio(fileName: nextSong)
     }
     
     private func previous() {
+        // let previousSong = songs.last?.songName ?? "RSEmart"
         
+        guard !songQueue.isEmpty else {
+            print("No songs in queue")
+            return
+        }
+        
+        // Same as the skip function but in reverse
+        let previousSong = songQueue[(currentIndex - 1 + songQueue.count) % songQueue.count].songName
+        
+        loadAudio(fileName: previousSong)
+
     }
 
     
     // Prepare the audio player with the selected song
     private func loadAudio(fileName: String) {
+        
         guard let path = Bundle.main.path(forResource: fileName, ofType: "mp3", inDirectory: "Music") else {
             print("Could not find file: \(fileName).mp3")
             return
@@ -177,6 +223,7 @@ struct ContentView: View {
     // MARK: Song Database Functions
     // Insert a new song
     // @TODO: Add field for uploading .mp3 files
+    // @TODO: figure out how to handle the population detection issue
     private func addSong(title: String, artist: String, modelContext: ModelContext) {
         let newSong = Song(title: title, songName: "filename", artist: artist, locations: ["location"], populationMin: 0, populationMax: 9999)
         modelContext.insert(newSong)
@@ -202,8 +249,16 @@ struct ContentView: View {
             songQueue.shuffle()
         }
         
-        // @TODO: change the default song from RSEmart to something else
-        loadAudio(fileName: songQueue.first?.songName ?? "RSEmart")
+        // if the queue is empty, load the default song
+        //loadAudio(fileName: songQueue.first?.songName ?? "RSEmart")
+        
+        // reset the current index to 0 and start playing
+        if !songQueue.isEmpty {
+            currentSong = songQueue[currentIndex]
+            loadAudio(fileName: songQueue[currentIndex].songName)
+            audioPlayer?.play()
+            isPaused = false
+        }
         
     }
     
@@ -221,6 +276,9 @@ struct ContentView: View {
     }
 }
 
+
+
+// MARK:
 // MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled
 /*
 #Preview {
