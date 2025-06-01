@@ -12,44 +12,14 @@ import AVFoundation
 
 struct ContentView: View {
 
-    @Environment(\.modelContext) private var modelContext
-    
     @StateObject private var audioManager = AudioPlayerManager.shared
+    @Environment(\.modelContext) private var modelContext
     
     @Query private var songs: [Song] // Query all songs from the database
 
-    @State private var audioPlayer: AVAudioPlayer?
-    @State private var isPaused: Bool = false
-    @State private var isShuffled: Bool = false
-    @State private var songLength: TimeInterval = 0.0   // total length of the song
-    @State private var currentTime: TimeInterval = 0.0  // current playback time
-
-    @State private var currentContext: Context = .all
-    @State private var currentSong: Song? = nil // the currently playing song, if any
-    @State private var currentIndex: Int = 0 // index of the current song in the queue
-    @State private var songQueue: [Song] = []
-   
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
-    // all contexts the music will account for
-    enum Context: String {
-        case all = "All"
-        case gym = "Gyms"
-        case restaurant = "Restaurants"
-        case store = "Stores"
-        case park = "Parks"
-        case home = "Home"
-        case work = "Work"
-        case street = "Streets"
-        case driving = "Driving"
-        case beach = "Beaches"
-        case mountain = "Mountains"
-        case city = "Cities"
-        case town = "Towns"
-        case water = "Water"
-    }
-
     var body: some View {
 
         ZStack {
@@ -71,7 +41,7 @@ struct ContentView: View {
                     Spacer()
                     Button {
                         // Add song button
-                        addSong(title: "New Song", artist: "New Artist", modelContext: modelContext)
+                        audioManager.addSong(title: "New Song", artist: "New Artist", modelContext: modelContext)
                         
                         // TEMP
                         print(songs)
@@ -102,7 +72,7 @@ struct ContentView: View {
 
                     // Previous Button
                     Button {
-                        loadAudio(fileName: "RSEmart")
+                        audioManager.loadAudio(fileName: "RSEmart")
                         
                     } label: {
                         Image(systemName: "backward.fill") // @TODO -- implement previous song functionality
@@ -112,16 +82,16 @@ struct ContentView: View {
                     // Play/Pause Button
                     Button {
                         
-                        currentSong == nil ? currentSong = songs.first : () // Play the first song in the list if nothing is currently queued
+                        audioManager.currentSong == nil ? audioManager.currentSong = songs.first : () // Play the first song in the list if nothing is currently queued
                         
                         // TEMP FOR TESTING ONLY:
-                        currentSong == nil ? currentSong = sampleSong : ()
+                        audioManager.currentSong == nil ? audioManager.currentSong = sampleSong : ()
                         // loadAudio(fileName: "RSEmart")
                         
-                        isPaused.toggle()
-                        musicPlayPause()
+                        audioManager.isPaused.toggle()
+                        audioManager.musicPlayPause()
                     } label: {
-                        Image(systemName: isPaused ? "pause.fill" : "play.fill")
+                        Image(systemName: audioManager.isPaused ? "pause.fill" : "play.fill")
                             .imageScale(.large)
                     }
                     ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
@@ -137,17 +107,17 @@ struct ContentView: View {
                 }
 
                 VStack {
-                    Text(currentSong?.title ?? "No song playing")
+                    Text(audioManager.currentSong?.title ?? "No song playing")
                         .font(.title)
                         .padding()
-                    Text(currentSong?.artist ?? "No artist")
+                    Text(audioManager.currentSong?.artist ?? "No artist")
                     
                     Button {
-                        isShuffled.toggle()
+                        audioManager.isShuffled.toggle()
                         
                     }
                     label: {
-                        Image(systemName: isShuffled ? "shuffle.circle.fill" : "shuffle.circle")
+                        Image(systemName: audioManager.isShuffled ? "shuffle.circle.fill" : "shuffle.circle")
                     }
                 }
             }
@@ -157,129 +127,6 @@ struct ContentView: View {
         }
     }
     
-    
-    
-    // MARK: Audio Playback Functions
-    // Play the music if not paused, pause the music if paused. ezpz
-    private func musicPlayPause() {
-        if audioPlayer != nil && audioPlayer!.isPlaying {
-            audioPlayer!.pause()
-            isPaused.toggle()
-        }
-        else if audioPlayer != nil && !audioPlayer!.isPlaying {
-            audioPlayer!.play()
-            isPaused.toggle()
-        }
-    }
-    
-    private func skip() {
-        // let nextSong = songs.first?.songName ?? "RSEmart"
-        
-        guard !songQueue.isEmpty else {
-            print("No songs in queue")
-            return
-        }
-        
-        // Set the current index to the next song in the queue
-        // if on the last song, loop back to the start of the queue
-        let nextSong = songQueue[(currentIndex + 1) % songQueue.count].songName
-        
-        loadAudio(fileName: nextSong)
-    }
-    
-    private func previous() {
-        // let previousSong = songs.last?.songName ?? "RSEmart"
-        
-        guard !songQueue.isEmpty else {
-            print("No songs in queue")
-            return
-        }
-        
-        // Same as the skip function but in reverse
-        let previousSong = songQueue[(currentIndex - 1 + songQueue.count) % songQueue.count].songName
-        
-        loadAudio(fileName: previousSong)
-
-    }
-
-    
-    // Prepare the audio player with the selected song
-    private func loadAudio(fileName: String) {
-        
-        guard let path = Bundle.main.path(forResource: fileName, ofType: "mp3", inDirectory: "Music") else {
-            print("Could not find file: \(fileName).mp3")
-            return
-        }
-        
-        let url = URL(fileURLWithPath: path)
-        
-        do {
-            audioPlayer = try AVAudioPlayer(contentsOf: url)
-            audioPlayer?.prepareToPlay()
-            // songLength = audioPlayer?.duration ?? 0.0
-        } catch {
-            print("Could not create audio player: \(error)")
-        }
-    }
-    
-    // MARK: Song Database Functions
-    // Insert a new song
-    // @TODO: Add field for uploading .mp3 files
-    // @TODO: figure out how to handle the population detection issue
-    private func addSong(title: String, artist: String, modelContext: ModelContext) {
-        let newSong = Song(title: title, songName: "filename", artist: artist, locations: ["location"], populationMin: 0, populationMax: 9999)
-        modelContext.insert(newSong)
-        try? modelContext.save()
-    }
-
-    // Remove an existing song
-    private func removeSong(_ song: Song, modelContext: ModelContext) {
-        modelContext.delete(song)
-        try? modelContext.save()
-    }
-    
-    // Reset the queue upon entering a new location/context
-    private func reloadQueue(newContext: String, shuffle: Bool) {
-        
-        songQueue.removeAll()
-        
-        // add only the new songs to the queue
-        songQueue = songs.filter { $0.locations.contains(newContext) }
-        
-        // shuffle if user has the option toggled
-        if isShuffled {
-            songQueue.shuffle()
-        }
-        
-        // if the queue is empty, load the default song
-        //loadAudio(fileName: songQueue.first?.songName ?? "RSEmart")
-        
-        // reset the current index to 0 and start playing
-        if !songQueue.isEmpty {
-            currentSong = songQueue[currentIndex]
-            loadAudio(fileName: songQueue[currentIndex].songName)
-            audioPlayer?.play()
-            isPaused = false
-        }
-        
-    }
-    
-    // Toggle shuffle mode
-    // Technically we can just call reloadQueue instead of this but it'll save an unnecessary full list reset
-    // and slightly reduce lag if the user reshuffles
-    private func toggleShuffle() {
-        isShuffled.toggle()
-        
-        if(isShuffled) {
-            songQueue.shuffle()
-        } else {
-            reloadQueue(newContext: currentContext.rawValue, shuffle: isShuffled)
-        }
-    }
-}
-
-
-
 // MARK:
 // MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled
 /*
