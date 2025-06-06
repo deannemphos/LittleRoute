@@ -11,20 +11,20 @@ import MapKit
 import AVFoundation
 
 struct ContentView: View {
-
+    
     @StateObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
     @Query private var songs: [Song] // Query all songs from the database
-
+    
     let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
     var body: some View {
-
+        
         ZStack {
             VStack {
-               
+                
                 // Top bar
                 HStack {
                     Button {
@@ -69,10 +69,10 @@ struct ContentView: View {
                 
                 // Music bar
                 HStack {
-
+                    
                     // Previous Button
                     Button {
-                        audioManager.loadAudio(fileName: "RSEmart")
+                        audioManager.previous()
                         
                     } label: {
                         Image(systemName: "backward.fill") // @TODO -- implement previous song functionality
@@ -105,7 +105,7 @@ struct ContentView: View {
                     Image(systemName: "forward.fill")
                         .imageScale(.large)
                 }
-
+                
                 VStack {
                     Text(audioManager.currentSong?.title ?? "No song playing")
                         .font(.title)
@@ -113,7 +113,7 @@ struct ContentView: View {
                     Text(audioManager.currentSong?.artist ?? "No artist")
                     
                     Button {
-                        audioManager.isShuffled.toggle()
+                        audioManager.toggleShuffle()
                         
                     }
                     label: {
@@ -125,7 +125,16 @@ struct ContentView: View {
             Color("Background").ignoresSafeArea(edges: .all)
                 .zIndex(-1.0)
         }
+        .onAppear {
+            // Populate the song queue with all songs from the database
+            audioManager.reloadQueue(newContext: audioManager.currentContext.rawValue, shuffle: audioManager.isShuffled, songs: songs)
+        }
+        .onChange(of: songs) {
+            audioManager.reloadQueue(newContext: audioManager.currentContext.rawValue, shuffle: audioManager.isShuffled, songs: $0)
+        }
     }
+    
+}
     
 // MARK:
 // MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled

@@ -45,7 +45,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     // MARK: Audio Playback Functions
     // Play the music if not paused, pause the music if paused. ezpz
-    private func musicPlayPause() {
+    public func musicPlayPause() {
         if audioPlayer != nil && audioPlayer!.isPlaying {
             audioPlayer!.pause()
             isPaused.toggle()
@@ -56,7 +56,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
     
-    private func skip() {
+    public func skip() {
         // let nextSong = songs.first?.songName ?? "RSEmart"
         
         guard !songQueue.isEmpty else {
@@ -71,7 +71,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         loadAudio(fileName: nextSong)
     }
     
-    private func previous() {
+    public func previous() {
         // let previousSong = songs.last?.songName ?? "RSEmart"
         
         guard !songQueue.isEmpty else {
@@ -86,7 +86,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     }
 
-    
+    // Toggle shuffle mode
+    // Technically we can just call reloadQueue instead of this but it'll save an unnecessary full list reset
+    // and slightly reduce lag if the user reshuffles
+    public func toggleShuffle() {
+        isShuffled.toggle()
+        
+        if(isShuffled) {
+            songQueue.shuffle()
+        } else {
+            reloadQueue(newContext: currentContext.rawValue, shuffle: isShuffled, songs: songQueue)
+        }
+    }
+
     // Prepare the audio player with the selected song
     private func loadAudio(fileName: String) {
         
@@ -123,17 +135,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     
     // Reset the queue upon entering a new location/context
-    private func reloadQueue(newContext: String, shuffle: Bool, songs: [Song]) {
+    private func reloadQueue(newContext: Context, shuffle: Bool, songs: [Song]) {
         
         songQueue.removeAll()
         
         // add only the new songs to the queue
-        songQueue = songs.filter { $0.locations.contains(newContext) }
+        songQueue = songs.filter { $0.locations.contains(newContext.rawValue) }
         
         // shuffle if user has the option toggled
         if isShuffled {
             songQueue.shuffle()
         }
+        
+        // reset the current index to 0
+        currentIndex = 0
         
         // if the queue is empty, load the default song
         //loadAudio(fileName: songQueue.first?.songName ?? "RSEmart")
@@ -146,18 +161,5 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             isPaused = false
         }
         
-    }
-    
-    // Toggle shuffle mode
-    // Technically we can just call reloadQueue instead of this but it'll save an unnecessary full list reset
-    // and slightly reduce lag if the user reshuffles
-    private func toggleShuffle() {
-        isShuffled.toggle()
-        
-        if(isShuffled) {
-            songQueue.shuffle()
-        } else {
-            reloadQueue(newContext: currentContext.rawValue, shuffle: isShuffled, songs: songQueue)
-        }
     }
 }
