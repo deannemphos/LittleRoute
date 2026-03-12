@@ -1,3 +1,4 @@
+// Swift
 //
 //  ContentView.swift
 //  LittleRoute
@@ -10,14 +11,15 @@ import SwiftData
 import MapKit
 import AVFoundation
 
-struct ContentView: View {
     
-    @StateObject private var audioManager = AudioPlayerManager.shared
+struct ContentView: View {
+    @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
     @Query private var songs: [Song] // Query all songs from the database
+    @State private var showSongList = false
     
-    let sampleSong: Song = Song.init(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000 )
+    let sampleSong: Song = Song(title: "Sample Song", songName: "RSEmart", artist: "Sample Artist", locations: ["all"], populationMin: 0, populationMax: 10000)
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
     var body: some View {
@@ -40,13 +42,10 @@ struct ContentView: View {
                         .padding()
                     Spacer()
                     Button {
-                        // Add song button
-                        audioManager.addSong(title: "New Song", artist: "New Artist", modelContext: modelContext)
-                        
-                        // TEMP
-                        print(songs)
+                        // Show song list
+                        showSongList.toggle()
                     } label: {
-                        Image(systemName: "plus.circle.fill")
+                        Image(systemName: "music.note.list")
                     }
                     .padding()
                 }
@@ -59,13 +58,43 @@ struct ContentView: View {
                 .cornerRadius(c_radius)
                 .padding()
                 
-                // Location info
-                LazyVStack {
-                    
+                // Song list
+                if showSongList {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(songs, id: \.songName) { song in
+                                Button {
+                                    audioManager.currentSong = song
+                                    audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading) {
+                                            Text(song.title)
+                                                .font(.headline)
+                                                .foregroundColor(.primary)
+                                            Text(song.artist ?? "Unknown Artist")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        if audioManager.currentSong?.songName == song.songName {
+                                            Image(systemName: "speaker.wave.2.fill")
+                                                .foregroundColor(.accentColor)
+                                        }
+                                    }
+                                    .padding()
+                                    .background(Color.black.opacity(0.3))
+                                    .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding()
+                    }
+                    .frame(height: 200)
+                    .background(Color.black.opacity(0.2))
+                    .cornerRadius(c_radius)
+                    .padding(.horizontal)
                 }
-                .background(.black)
-                .padding()
-                .cornerRadius(c_radius)
                 
                 // Music bar
                 HStack {
@@ -73,34 +102,27 @@ struct ContentView: View {
                     // Previous Button
                     Button {
                         audioManager.previous()
-                        
                     } label: {
-                        Image(systemName: "backward.fill") // @TODO -- implement previous song functionality
+                        Image(systemName: "backward.fill")
                             .imageScale(.large)
                     }
                     
                     // Play/Pause Button
                     Button {
-                        
-                        audioManager.currentSong == nil ? audioManager.currentSong = songs.first : () // Play the first song in the list if nothing is currently queued
-                        
-                        // TEMP FOR TESTING ONLY:
-                        audioManager.currentSong == nil ? audioManager.currentSong = sampleSong : ()
-                        // loadAudio(fileName: "RSEmart")
-                        
-                        audioManager.isPaused.toggle()
+
                         audioManager.musicPlayPause()
                     } label: {
-                        Image(systemName: audioManager.isPaused ? "pause.fill" : "play.fill")
+                        Image(systemName: audioManager.isPaused ? "play.fill" : "pause.fill")
                             .imageScale(.large)
                     }
-                    ProgressView(value: /*@START_MENU_TOKEN@*/0.5/*@END_MENU_TOKEN@*/) // @TODO -- Show song's current progression
+                    // Song progress bar
+                    ProgressView(value: audioManager.progress)
                 }
                 .padding()
                 
                 // Skip Button
                 Button {
-                    // loadAudio(fileName: songs) // @TODO -- add in skip functionality
+                    audioManager.skip()
                 } label: {
                     Image(systemName: "forward.fill")
                         .imageScale(.large)
@@ -114,9 +136,7 @@ struct ContentView: View {
                     
                     Button {
                         audioManager.toggleShuffle()
-                        
-                    }
-                    label: {
+                    } label: {
                         Image(systemName: audioManager.isShuffled ? "shuffle.circle.fill" : "shuffle.circle")
                     }
                 }
@@ -126,21 +146,21 @@ struct ContentView: View {
                 .zIndex(-1.0)
         }
         .onAppear {
-            // Populate the song queue with all songs from the database
-            audioManager.reloadQueue(newContext: audioManager.currentContext.rawValue, shuffle: audioManager.isShuffled, songs: songs)
+            // Load songs from Music folder if none exist
+            if songs.isEmpty {
+                let loadedSongs = audioManager.loadSongsFromBundle(modelContext: modelContext)
+                // Queue the loaded songs immediately
+                if !loadedSongs.isEmpty {
+                    audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: loadedSongs)
+                }
+            } else {
+                // Populate the song queue with all songs from the database
+                audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
+            }
         }
-        .onChange(of: songs) {
-            audioManager.reloadQueue(newContext: audioManager.currentContext.rawValue, shuffle: audioManager.isShuffled, songs: $0)
+        .onChange(of: songs) { oldValue, newValue in
+            audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
         }
     }
     
 }
-    
-// MARK:
-// MARK: - SwiftUI Preview -- does not work with SweetPad so it's getting disabled
-/*
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
-}
-*/
