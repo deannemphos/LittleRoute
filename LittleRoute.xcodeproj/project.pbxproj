@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		28465EB02DA10E9600D0508D /* Music in Resources */ = {isa = PBXBuildFile; fileRef = 28465EAF2DA10E9600D0508D /* Music */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		28D3DCC22D00D87900CA0FC2 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +28,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		28465EAF2DA10E9600D0508D /* Music */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Music; path = LittleRoute/Music; sourceTree = "<group>"; };
 		28D3DCAF2D00D87700CA0FC2 /* LittleRoute.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LittleRoute.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		28D3DCC12D00D87900CA0FC2 /* LittleRouteTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LittleRouteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		28D3DCCB2D00D87900CA0FC2 /* LittleRouteUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LittleRouteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -75,6 +80,7 @@
 		28D3DCA62D00D87700CA0FC2 = {
 			isa = PBXGroup;
 			children = (
+				28465EAF2DA10E9600D0508D /* Music */,
 				28D3DCB12D00D87700CA0FC2 /* LittleRoute */,
 				28D3DCC42D00D87900CA0FC2 /* LittleRouteTests */,
 				28D3DCCE2D00D87900CA0FC2 /* LittleRouteUITests */,
@@ -212,6 +218,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				28465EB02DA10E9600D0508D /* Music in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
