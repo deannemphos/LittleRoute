@@ -22,7 +22,7 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     // MARK: - Public Methods
     
-    // Request authorization to use location services 
+    // Request authorization to use location services  
     //  might move this somewhere else, gotta see how it plays out bc I don't have my mac with me
     // @ TODO: test on simulator and enable the thingy for permissions in the plist
     private func requestLocationAuthorization() {
