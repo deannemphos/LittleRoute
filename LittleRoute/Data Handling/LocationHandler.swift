@@ -25,12 +25,12 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     // Request authorization to use location services  
     //  might move this somewhere else, gotta see how it plays out bc I don't have my mac with me
     // @ TODO: test on simulator and enable the thingy for permissions in the plist
-    private func requestLocationAuthorization() {
+    public func requestLocationAuthorization() {
         locationManager.requestWhenInUseAuthorization()
     }
     
     /// Start updating location
-    private func startLocationUpdates() {
+    public func startLocationUpdates() {
         locationManager.startUpdatingLocation()
     }
     
