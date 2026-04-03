@@ -60,6 +60,20 @@ struct ContentView: View {
                 .cornerRadius(c_radius)
                 .padding()
                 
+                HStack {
+                    Text("Current Location: \(locationHandler.currentAddress)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("Latitude: \(locationHandler.latitude)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text("Longitude: \(locationHandler.longitude)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal)
+
                 // Song list
                 if showSongList {
                     ScrollView {
