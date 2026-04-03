@@ -16,6 +16,8 @@ struct ContentView: View {
     @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
+    @StateObject private var locationHandler = LocationHandler()
+
     @Query private var songs: [Song] // Query all songs from the database
     @State private var showSongList = false
     
@@ -146,6 +148,8 @@ struct ContentView: View {
                 .zIndex(-1.0)
         }
         .onAppear {
+            locationHandler.requestLocationAuthorization()
+            locationHandler.startLocationUpdates()
             // Load songs from Music folder if none exist
             if songs.isEmpty {
                 let loadedSongs = audioManager.loadSongsFromBundle(modelContext: modelContext)
