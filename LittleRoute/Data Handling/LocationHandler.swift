@@ -2,6 +2,9 @@ import Foundation
 import CoreLocation
 import MapKit
 
+// Points of interest reference
+// https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
+
 class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: - Properties
     private let locationManager = CLLocationManager()
