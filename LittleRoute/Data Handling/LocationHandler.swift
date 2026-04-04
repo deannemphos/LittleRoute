@@ -77,6 +77,7 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     // create manager with past locations. unsure if necessary yet depending on how geofences/contexts get implemented
     // need to come back to this and share context enums from the music playback branch
+    // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
     private func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let location = locations.last {
             currentLocation = location
