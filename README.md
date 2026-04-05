@@ -19,7 +19,7 @@ A geolocation context-based music app written in Swift for iOS
 - [ ] Crossfade and song blending
 
 
-## Resources
+## Development Resources
 ### Location
 - https://stackoverflow.com/questions/75704998/looking-up-nearest-point-of-interest-using-mapkit
 - https://developer.apple.com/documentation/mapkit/interacting-with-nearby-points-of-interest  
