@@ -17,3 +17,12 @@ A geolocation context-based music app written in Swift for iOS
 - [] Custom geotags
 - [] Custom themes
 - [] Crossfade and song blending
+
+
+## Resources
+### Location
+- https://stackoverflow.com/questions/75704998/looking-up-nearest-point-of-interest-using-mapkit
+- https://developer.apple.com/documentation/mapkit/interacting-with-nearby-points-of-interest  
+  - https://developer.apple.com/documentation/mapkit/mkaddressfilter/options
+    - Filter by locality, zip code, neighborhood, etc
+  - https://developer.apple.com/documentation/mapkit/mklocalsearch 

@@ -47,7 +47,38 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     public func getCurrentLocation() -> CLLocation? {
         return currentLocation
     }
-    
+
+    // Retrieve points of interest around the user and return them as an array
+    // @Params: radius :: double -- Measured in meters, used for CLLocationDistance
+    // May not need to return anything, return strings for debugging for now
+    // @TODO: REPLACE THIS WITH LOCAL MAPKIT SEARCH. DO NOT HAVE ACCESS TO SIM OR INTELLISENSE RIGHT NOW FOR TESTING
+    // @TODO: HIGH PRIORITY -- REWRITE FOR PROPER EFFICIENCY, THIS WILL BE EXPENSIVE IF CALLED FREQUENTLY
+    public func getPointsOfInterest(radius: Double, filter: MKPointOfInterestCategory[]?) -> String[]? {
+        // let localArea = ""
+        
+        // perform a search of the points of interest within the radius and return the MKPointOfInterestCategory of each 
+        let region = MKCoordinateRegion(center: currentLocation, latitudinalMeters: radius, longitudinalMeters: radius)
+        
+        // check within radius for POI, this only labels on the map
+        let localArea = MKLocalPointsOfInterestRequest(coordinateRegion: region)
+
+        // filter by categories and filter out unwanted:
+        // i.e. (including: [.cafe, .restaurant, ...])
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: filter)
+
+        let search = MKLocalSearch(request: request)
+        search.start { response, error in 
+            guard let mapItems = response?.mapItems else {
+                    completion([])
+                    return
+                }
+                let categories = mapItems.compactMap { $0.MKPointOfInterestCategory }
+                completion(categories)
+        }
+
+        return localArea 
+    }
+
     // MARK: - CLLocationManagerDelegate
     // just checks if the user disabled location permissions
     // @TODO: 
