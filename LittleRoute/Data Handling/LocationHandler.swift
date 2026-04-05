@@ -66,6 +66,8 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         // i.e. (including: [.cafe, .restaurant, ...])
         request.pointOfInterestFilter = MKPointOfInterestFilter(including: filter)
 
+        // search local area, get back MKLocalSearch.Response with mapItema array 
+        // @TODO: Add MKLocalSearch.cancel() for if it times out/has an error with distance.
         let search = MKLocalSearch(request: request)
         search.start { response, error in 
             guard let mapItems = response?.mapItems else {
