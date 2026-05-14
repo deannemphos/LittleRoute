@@ -155,31 +155,43 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
 
 // @TODO: fix this bs, this is just temporary until i get a build working
 //        also inefficient as hell
+//        grouping these together for future reference  
 extension MKPointOfInterestCategory {
     static var allCases: [MKPointOfInterestCategory] {
         // Build in chunks to help the type-checker
-        let group1: [MKPointOfInterestCategory] = [
-            .airport, .amusementPark, .aquarium, .atm, .bakery, .bank, .beach
+        let aquatic: [MKPointOfInterestCategory] = [
+            .aquarium, .beach, .marina, .fishing, .kayaking, .surfing, .swimming
         ]
-        let group2: [MKPointOfInterestCategory] = [
-            .brewery, .cafe, .campground, .carRental, .evCharger, .fireStation
+        let sports: [MKPointOfInterestCategory] = [
+            .baseball, .basketball, .bowling, .golf, .fitnessCenter, .stadium, .tennis, .skiing, .soccer, .stadium, .tennis, .volleyball
         ]
-        let group3: [MKPointOfInterestCategory] = [
-            .fitnessCenter, .foodMarket, .gasStation, .hospital, .hotel
+        let dining: [MKPointOfInterestCategory] = [
+            .bakery, .brewery, .cafe, .distillery, .foodMarket, .restaurant, .winery
         ]
-        let group4: [MKPointOfInterestCategory] = [
-            .laundry, .library, .marina, .movieTheater, .museum, .nationalPark
+        let parks: [MKPointOfInterestCategory] = [
+            .amusementPark, .campground, .fairground, .landmark, .nationalPark, .park, .rvPark
         ]
-        let group5: [MKPointOfInterestCategory] = [
-            .nightlife, .park, .parking, .pharmacy, .police, .postOffice
+        let nightlife: [MKPointOfInterestCategory] = [
+            .miniGolf, .movieTheater, .musicVenue, .nightlife, .park, .parking, .pharmacy, .police, .postOffice
         ]
-        let group6: [MKPointOfInterestCategory] = [
-            .publicTransport, .restaurant, .restroom, .school, .stadium
+        let city: [MKPointOfInterestCategory] = [
+            .airport, .conventionCenter, .publicTransport, .hotel
         ]
-        let group7: [MKPointOfInterestCategory] = [
-            .store, .theater, .university, .winery, .zoo
+        let education: [MKPointOfInterestCategory] = [
+            .library, .museum, .nationalMonument,.planetarium, .school, .theater, .university, .zoo
         ]
-        return group1 + group2 + group3 + group4 + group5 + group6 + group7
+        let markets: [MKPointOfInterestCategory] = [
+            .groceryStore, .shoppingCenter, .store
+        ]
+        let rural: [MKPointOfInterestCategory] = [
+            .landmark, .naturalFeature
+        ]
+        let other: [MKPointOfInterestCategory] = [
+            .other
+        ]
+        return aquatic + sports + dining + parks + nightlife + city + education + markets + rural + other
     }
 }
 
+// UNUSED:
+.goKart
