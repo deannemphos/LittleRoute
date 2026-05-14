@@ -16,7 +16,7 @@ struct ContentView: View {
     @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
-    @StateObject private var locationHandler = LocationHandler()
+    @ObservedObject private var locationHandler = LocationHandler()
 
     @Query private var songs: [Song] // Query all songs from the database
     @State private var showSongList = false
@@ -60,15 +60,17 @@ struct ContentView: View {
                 .cornerRadius(c_radius)
                 .padding()
                 
+                
+                // location info, probably not keeping this but it'll fill out the UI for the time being
                 HStack {
-                    Text("Current Location: \(locationHandler.currentAddress)")
+                    Text("Current Location: \(locationHandler.currentLocation?.description ?? "Unknown")")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text("Latitude: \(locationHandler.latitude)")
+                    Text("Latitude: \(locationHandler.currentLocation?.coordinate.latitude ?? 0.0)")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    Text("Longitude: \(locationHandler.longitude)")
+                    Text("Longitude: \(locationHandler.currentLocation?.coordinate.longitude ?? 0.0)")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -182,3 +184,4 @@ struct ContentView: View {
     }
     
 }
+
