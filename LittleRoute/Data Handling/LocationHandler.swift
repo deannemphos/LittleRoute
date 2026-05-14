@@ -11,6 +11,7 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     @Published var authorizationStatus: CLAuthorizationStatus?
     @Published var currentLocation: CLLocation?
+    @Published var currentLocationName: String = "Unknown" // User-friendly name for the current location, updated via reverse geocoding in lookUpCurrentLocation
     @Published var lastKnownLocation: CLLocation? // potentially use to inform next song choice? pass this through an AI model for a monetized "better" music transition?
     @Published var nearbyPlaces: [MKMapItem] = []
     @Published var locationError: Error?
