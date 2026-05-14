@@ -53,13 +53,11 @@ struct ContentView: View {
                 }
                 
                 // Map!
-                Map() {
+                MapView(locationHandler: locationHandler, context: audioManager.currentContext)
+                    .frame(width: 300, height: 300)
+                    .cornerRadius(c_radius)
+                    .padding()
                     
-                }
-                .frame(width: 300, height: 300)
-                .cornerRadius(c_radius)
-                .padding()
-                
                 
                 // location info, probably not keeping this but it'll fill out the UI for the time being
                 HStack {
