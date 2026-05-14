@@ -71,7 +71,8 @@ struct ContentView: View {
                 
                 // location info, probably not keeping this but it'll fill out the UI for the time being
                 HStack {
-                    Text("Current Location: \(locationHandler.currentLocation?.description ?? "Unknown")")
+                    
+                    Text("Current Location: \(locationHandler.currentLocationName)")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
