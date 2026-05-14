@@ -26,6 +26,16 @@ struct ContentView: View {
     
     var body: some View {
         
+        // Show error screen if location permission is denied
+        if locationHandler.authorizationStatus == .denied || locationHandler.authorizationStatus == .restricted {
+            ErrorView(
+                errorTitle: "Location Access Required",
+                errorMessage: "LittleRoute needs your location to play music matching your surroundings.",
+                fixInstructions: "Go to Settings > Privacy & Security > Location Services and enable location for LittleRoute.",
+                onRetryAction: { locationHandler.requestLocationAuthorization() }
+            )
+        } else {
+        
         ZStack {
             VStack {
                 
@@ -179,7 +189,7 @@ struct ContentView: View {
         .onChange(of: songs) { oldValue, newValue in
             audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
         }
+        } // end else (location permission granted)
     }
     
 }
-
