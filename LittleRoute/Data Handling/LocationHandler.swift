@@ -80,6 +80,32 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
             completion(.success(items))
         }
     }
+    
+    // ripped from apple docs -- https://developer.apple.com/documentation/corelocation/converting-between-coordinates-and-user-friendly-place-names
+    // reverse geocodes the current location (CLlocation just gives coordinates and shit) to get a user-friendly place name (i.e. Betty's)
+    public func lookUpCurrentLocation(completionHandler: @escaping (CLPlacemark?) -> Void ) {
+        // Use the last reported location.
+        if let lastLocation = self.locationManager.location {
+            let geocoder = CLGeocoder()
+                
+            // Look up the location and pass it to the completion handler
+            geocoder.reverseGeocodeLocation(lastLocation,
+                        completionHandler: { (placemarks, error) in
+                if error == nil {
+                    let firstLocation = placemarks?[0]
+                    completionHandler(firstLocation)
+                }
+                else {
+                 // An error occurred during geocoding.
+                    completionHandler(nil)
+                }
+            })
+        }
+        else {
+            // No location was available.
+            completionHandler(nil)
+        }
+    }
 
     // MARK: - CLLocationManagerDelegate
     // just checks if the user disabled location permissions
@@ -109,6 +135,14 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         if let location = locations.last {
             currentLocation = location
             lastKnownLocation = location
+
+            // set the location name every time we get a new location update for simplicity, can optimize later if this becomes an issue
+            lookUpCurrentLocation { [weak self] placemark in
+                DispatchQueue.main.async {
+                    self?.currentLocationName = placemark?.name ?? "Unknown"
+                }
+            }    
+        
         }
     }
     
