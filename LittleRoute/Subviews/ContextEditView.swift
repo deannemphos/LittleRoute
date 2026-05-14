@@ -7,10 +7,14 @@ struct ContextEditView: View {
     // color (multiple)
     //
     // We will populate these with the Context (struct) passed through)
+    
+    var body: some View {
+        Text("Context Edit View")
+    }
 }
 
 struct ContextEditView_Previews: PreviewProvider {
     static var previews: some View {
-            context: "PLACEHOLDER, EDIT LATER"
+            // context: "PLACEHOLDER, EDIT LATER"
         }
 }

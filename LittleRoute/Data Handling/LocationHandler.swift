@@ -12,7 +12,7 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var authorizationStatus: CLAuthorizationStatus?
     @Published var currentLocation: CLLocation?
     @Published var lastKnownLocation: CLLocation? // potentially use to inform next song choice? pass this through an AI model for a monetized "better" music transition?
-    @Published var nearbyPlaces: [MKPointOfInterest] = []
+    @Published var nearbyPlaces: [MKMapItem] = []
     @Published var locationError: Error?
     
     // Init with passthrough of maximum possible accuracy to differentiate between close buildings
@@ -48,70 +48,64 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         return currentLocation
     }
 
-    // Retrieve points of interest around the user and return them as an array
-    // @Params: radius :: double -- Measured in meters, used for CLLocationDistance
-    // May not need to return anything, return strings for debugging for now
-    // @TODO: REPLACE THIS WITH LOCAL MAPKIT SEARCH. DO NOT HAVE ACCESS TO SIM OR INTELLISENSE RIGHT NOW FOR TESTING
-    // @TODO: HIGH PRIORITY -- REWRITE FOR PROPER EFFICIENCY, THIS WILL BE EXPENSIVE IF CALLED FREQUENTLY
-    public func getPointsOfInterest(radius: Double, filter: MKPointOfInterestCategory[]?) -> String[]? {
-        // let localArea = ""
-        
-        // perform a search of the points of interest within the radius and return the MKPointOfInterestCategory of each 
-        let region = MKCoordinateRegion(center: currentLocation, latitudinalMeters: radius, longitudinalMeters: radius)
-        
-        // check within radius for POI, this only labels on the map
-        let localArea = MKLocalPointsOfInterestRequest(coordinateRegion: region)
-
-        // filter by categories and filter out unwanted:
-        // i.e. (including: [.cafe, .restaurant, ...])
-        request.pointOfInterestFilter = MKPointOfInterestFilter(including: filter)
-
-        // search local area, get back MKLocalSearch.Response with mapItema array 
-        // @TODO: Add MKLocalSearch.cancel() for if it times out/has an error with distance.
-        let search = MKLocalSearch(request: request)
-        search.start { response, error in 
-            guard let mapItems = response?.mapItems else {
-                    completion([])
-                    return
-                }
-                let categories = mapItems.compactMap { $0.MKPointOfInterestCategory }
-                completion(categories)
+    public func getPointsOfInterest(radius: CLLocationDistance, filter: [MKPointOfInterestCategory]? = nil, completion: @escaping (Result<[MKMapItem], Error>) -> Void) {
+        guard let currentLocation = currentLocation else {
+            completion(.success([]))
+            return
         }
 
-        return localArea 
+        // Build a region centered on current coordinate
+        let region = MKCoordinateRegion(center: currentLocation.coordinate, latitudinalMeters: radius, longitudinalMeters: radius)
+
+        let request = MKLocalSearch.Request()
+        request.region = region
+        if let filter = filter {
+            request.pointOfInterestFilter = MKPointOfInterestFilter(including: filter)
+        } else {
+            // If no explicit categories provided, restrict to POIs by providing an empty excluding filter
+            // so we don't get generic search results that aren't actual POIs
+            request.pointOfInterestFilter = MKPointOfInterestFilter(including: MKPointOfInterestCategory.allCases)
+        }
+
+        let search = MKLocalSearch(request: request)
+        search.start { [weak self] (response: MKLocalSearch.Response?, error: Error?) in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            let items = response?.mapItems ?? []
+            DispatchQueue.main.async {
+                self?.nearbyPlaces = items
+            }
+            completion(.success(items))
+        }
     }
 
     // MARK: - CLLocationManagerDelegate
     // just checks if the user disabled location permissions
     // @TODO: 
-    private func Bool locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-        Bool status = false
 
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
             locationManager.startUpdatingLocation()
             print("location auth granted successfully")
-            status = true
         case .denied, .restricted:
             // @TODO: create screen that requests user to grant authorization to continue using the app
             print("**ERROR: location auth failed/not granted!")
-            
         case .notDetermined:
             // Wait for user to make a choice
             print("**ERROR: awaiting user location auth")
-            break
         @unknown default:
             break
         }
-
-        return status
     }
     
     // create manager with past locations. unsure if necessary yet depending on how geofences/contexts get implemented
     // need to come back to this and share context enums from the music playback branch
     // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
-    private func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let location = locations.last {
             currentLocation = location
             lastKnownLocation = location
@@ -119,7 +113,38 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
 
-    private func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         locationError = error
     }
 }
+
+// @TODO: fix this bs, this is just temporary until i get a build working
+//        also inefficient as hell
+extension MKPointOfInterestCategory {
+    static var allCases: [MKPointOfInterestCategory] {
+        // Build in chunks to help the type-checker
+        let group1: [MKPointOfInterestCategory] = [
+            .airport, .amusementPark, .aquarium, .atm, .bakery, .bank, .beach
+        ]
+        let group2: [MKPointOfInterestCategory] = [
+            .brewery, .cafe, .campground, .carRental, .evCharger, .fireStation
+        ]
+        let group3: [MKPointOfInterestCategory] = [
+            .fitnessCenter, .foodMarket, .gasStation, .hospital, .hotel
+        ]
+        let group4: [MKPointOfInterestCategory] = [
+            .laundry, .library, .marina, .movieTheater, .museum, .nationalPark
+        ]
+        let group5: [MKPointOfInterestCategory] = [
+            .nightlife, .park, .parking, .pharmacy, .police, .postOffice
+        ]
+        let group6: [MKPointOfInterestCategory] = [
+            .publicTransport, .restaurant, .restroom, .school, .stadium
+        ]
+        let group7: [MKPointOfInterestCategory] = [
+            .store, .theater, .university, .winery, .zoo
+        ]
+        return group1 + group2 + group3 + group4 + group5 + group6 + group7
+    }
+}
+
