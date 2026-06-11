@@ -16,7 +16,14 @@ struct ContentView: View {
     @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
-    @ObservedObject private var locationHandler = LocationHandler()
+    @ObservedObject private var locationHandler: LocationHandler
+    @ObservedObject private var contextDetector: ContextDetector
+
+    init() {
+        let handler = LocationHandler()
+        self.locationHandler = handler
+        self.contextDetector = ContextDetector(locationHandler: handler)
+    }
 
     @Query private var songs: [Song] // Query all songs from the database
     @State private var showSongList = false
@@ -186,9 +193,19 @@ struct ContentView: View {
                 // Populate the song queue with all songs from the database
                 audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
             }
+
+            // Switch music automatically when the user dwells in a new area
+            contextDetector.onContextChange = { newContext in
+                audioManager.switchContext(to: newContext, songs: songs)
+            }
+            contextDetector.start()
         }
         .onChange(of: songs) { oldValue, newValue in
             audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
+            // Re-capture the latest song list for future context switches
+            contextDetector.onContextChange = { newContext in
+                audioManager.switchContext(to: newContext, songs: newValue)
+            }
         }
         } // end else (location permission granted)
     }
