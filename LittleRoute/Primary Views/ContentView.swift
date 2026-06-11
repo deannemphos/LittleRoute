@@ -16,6 +16,15 @@ struct ContentView: View {
     @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     
+    @ObservedObject private var locationHandler: LocationHandler
+    @ObservedObject private var contextDetector: ContextDetector
+
+    init() {
+        let handler = LocationHandler()
+        self.locationHandler = handler
+        self.contextDetector = ContextDetector(locationHandler: handler)
+    }
+
     @Query private var songs: [Song] // Query all songs from the database
     @State private var showSongList = false
     
@@ -23,6 +32,16 @@ struct ContentView: View {
     let c_radius: CGFloat = 20.0 // corner radius for consistency
     
     var body: some View {
+        
+        // Show error screen if location permission is denied
+        if locationHandler.authorizationStatus == .denied || locationHandler.authorizationStatus == .restricted {
+            ErrorView(
+                errorTitle: "Location Access Required",
+                errorMessage: "LittleRoute needs your location to play music matching your surroundings.",
+                fixInstructions: "Go to Settings > Privacy & Security > Location Services and enable location for LittleRoute.",
+                onRetryAction: { locationHandler.requestLocationAuthorization() }
+            )
+        } else {
         
         ZStack {
             VStack {
@@ -50,14 +69,33 @@ struct ContentView: View {
                     .padding()
                 }
                 
-                // Map!
-                Map() {
-                    
-                }
-                .frame(width: 300, height: 300)
-                .cornerRadius(c_radius)
-                .padding()
+                Text("Context: \(audioManager.currentContext.rawValue.capitalized)")
+                    .font(.headline)
+                    .padding(.bottom)
                 
+                // Map!
+                MapView(locationHandler: locationHandler, context: audioManager.currentContext)
+                    .frame(width: 300, height: 300)
+                    .cornerRadius(c_radius)
+                    .padding()
+                    
+                
+                // location info, probably not keeping this but it'll fill out the UI for the time being
+                HStack {
+                    
+                    Text("Current Location: \(locationHandler.currentLocationName)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("Latitude: \(locationHandler.currentLocation?.coordinate.latitude ?? 0.0)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Text("Longitude: \(locationHandler.currentLocation?.coordinate.longitude ?? 0.0)")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal)
+
                 // Song list
                 if showSongList {
                     ScrollView {
@@ -146,6 +184,8 @@ struct ContentView: View {
                 .zIndex(-1.0)
         }
         .onAppear {
+            locationHandler.requestLocationAuthorization()
+            locationHandler.startLocationUpdates()
             // Load songs from Music folder if none exist
             if songs.isEmpty {
                 let loadedSongs = audioManager.loadSongsFromBundle(modelContext: modelContext)
@@ -157,10 +197,21 @@ struct ContentView: View {
                 // Populate the song queue with all songs from the database
                 audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
             }
+
+            // Switch music automatically when the user dwells in a new area
+            contextDetector.onContextChange = { newContext in
+                audioManager.switchContext(to: newContext, songs: songs)
+            }
+            contextDetector.start()
         }
         .onChange(of: songs) { oldValue, newValue in
             audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
+            // Re-capture the latest song list for future context switches
+            contextDetector.onContextChange = { newContext in
+                audioManager.switchContext(to: newContext, songs: newValue)
+            }
         }
+        } // end else (location permission granted)
     }
     
 }

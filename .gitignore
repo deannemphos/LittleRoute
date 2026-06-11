@@ -30,6 +30,7 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
+*.md
 
 # CocoaPods
 #
@@ -77,3 +78,4 @@ Music/
 **/Music
 **/Music/
 **.mp3
+*.mp3

@@ -88,6 +88,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         case city = "Cities"
         case town = "Towns"
         case water = "Water"
+        case traveling = "Traveling" // fallback when no recognizable POI is nearby
     }
 
     // MARK: Audio Playback Functions
@@ -207,6 +208,36 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         try? modelContext.save()
     }
     
+    // Switch to a new context with a short crossfade.
+    // Called when the user enters a new area (via ContextDetector).
+    public func switchContext(to newContext: Context, songs: [Song], fadeDuration: TimeInterval = 1.5) {
+        guard newContext != currentContext else { return }
+
+        currentContext = newContext
+        let wasPlaying = audioPlayer?.isPlaying ?? false
+
+        guard wasPlaying, let player = audioPlayer else {
+            // Nothing audible — just swap the queue silently, no auto-play
+            reloadQueue(newContext: newContext, shuffle: isShuffled, songs: songs)
+            return
+        }
+
+        // Fade out the old song, then load the new queue and fade the next song in
+        player.setVolume(0.0, fadeDuration: fadeDuration)
+        DispatchQueue.main.asyncAfter(deadline: .now() + fadeDuration) { [weak self] in
+            guard let self = self else { return }
+            self.audioPlayer?.stop() // ensure the faded-out song doesn't keep playing if the new queue is empty
+            self.reloadQueue(newContext: newContext, shuffle: self.isShuffled, songs: songs)
+
+            guard let newPlayer = self.audioPlayer, self.currentSong != nil else { return }
+            newPlayer.volume = 0.0
+            newPlayer.play()
+            newPlayer.setVolume(1.0, fadeDuration: fadeDuration)
+            self.isPaused = false
+            self.startPlaybackTimer()
+        }
+    }
+
     // Reset the queue upon entering a new location/context
     public func reloadQueue(newContext: Context, shuffle: Bool, songs: [Song]) {
         
