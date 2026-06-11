@@ -69,6 +69,10 @@ struct ContentView: View {
                     .padding()
                 }
                 
+                Text("Context: \(audioManager.currentContext.rawValue.capitalized)")
+                    .font(.headline)
+                    .padding(.bottom)
+                
                 // Map!
                 MapView(locationHandler: locationHandler, context: audioManager.currentContext)
                     .frame(width: 300, height: 300)
