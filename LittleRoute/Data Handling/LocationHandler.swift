@@ -180,6 +180,7 @@ extension MKPointOfInterestCategory {
         let education: [MKPointOfInterestCategory] = [
             .library, .museum, .nationalMonument,.planetarium, .school, .theater, .university, .zoo
         ]
+        /*
         let markets: [MKPointOfInterestCategory] = [
             .groceryStore, .shoppingCenter, .store
         ]
@@ -189,9 +190,12 @@ extension MKPointOfInterestCategory {
         let other: [MKPointOfInterestCategory] = [
             .other
         ]
-        return aquatic + sports + dining + parks + nightlife + city + education + markets + rural + other
+         */
+        return aquatic + sports + dining + parks + nightlife + city + education // + markets + rural + other
     }
 }
 
+/*
 // UNUSED:
 .goKart
+*/

@@ -33,6 +33,7 @@ struct MapView: View {
         case .driving:    return [.gasStation, .carRental, .evCharger, .parking]
         case .street:     return [.publicTransport, .parking]
         case .home, .work: return []
+        case .traveling: return []
         }
     }
 

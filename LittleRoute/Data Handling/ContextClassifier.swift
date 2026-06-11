@@ -27,13 +27,13 @@ struct ContextClassifier {
             map[c] = .restaurant
         }
 
-        // Stores / shopping (malls included)
-        for c in [MKPointOfInterestCategory.shoppingCenter, .store, .groceryStore, .pharmacy] {
+        // Stores / shopping (@TODO: make sure this works with malls and such)
+        for c in [MKPointOfInterestCategory.store] {
             map[c] = .store
         }
 
         // Parks / outdoors
-        for c in [MKPointOfInterestCategory.park, .nationalPark, .campground, .rvPark, .amusementPark, .fairground, .nationalMonument, .naturalFeature] {
+        for c in [MKPointOfInterestCategory.park, .nationalPark, .campground, .rvPark, .amusementPark, .fairground, .nationalMonument] {
             map[c] = .park
         }
 
