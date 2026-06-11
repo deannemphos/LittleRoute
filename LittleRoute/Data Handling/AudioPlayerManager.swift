@@ -88,6 +88,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         case city = "Cities"
         case town = "Towns"
         case water = "Water"
+        case traveling = "Traveling" // fallback when no recognizable POI is nearby
     }
 
     // MARK: Audio Playback Functions
