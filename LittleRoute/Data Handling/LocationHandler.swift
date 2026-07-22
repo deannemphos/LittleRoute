@@ -15,6 +15,14 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var lastKnownLocation: CLLocation? // potentially use to inform next song choice? pass this through an AI model for a monetized "better" music transition?
     @Published var nearbyPlaces: [MKMapItem] = []
     @Published var locationError: Error?
+
+    // Throttling: accept a new location only after this much time has passed
+    // since the last accepted update, or when the user has moved farther than
+    // the distance threshold. Saves battery and avoids redundant POI churn.
+    private let updateInterval: TimeInterval = 60
+    private let significantDistance: CLLocationDistance = 400
+    private var lastAcceptedLocation: CLLocation?
+    private var lastAcceptedTime: Date?
     
     // Init with passthrough of maximum possible accuracy to differentiate between close buildings
     // (hopefully)
@@ -133,17 +141,28 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     // need to come back to this and share context enums from the music playback branch
     // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if let location = locations.last {
-            currentLocation = location
-            lastKnownLocation = location
+        guard let location = locations.last else { return }
 
-            // set the location name every time we get a new location update for simplicity, can optimize later if this becomes an issue
-            lookUpCurrentLocation { [weak self] placemark in
-                DispatchQueue.main.async {
-                    self?.currentLocationName = placemark?.name ?? "Unknown"
-                }
-            }    
-        
+        // Throttle: only accept the update if 60s have passed since the last
+        // accepted one, or the user moved more than 400m. The first update is
+        // always accepted.
+        if let lastLocation = lastAcceptedLocation, let lastTime = lastAcceptedTime {
+            let elapsed = Date().timeIntervalSince(lastTime)
+            let distance = location.distance(from: lastLocation)
+            guard elapsed >= updateInterval || distance > significantDistance else { return }
+        }
+
+        lastAcceptedLocation = location
+        lastAcceptedTime = Date()
+
+        currentLocation = location
+        lastKnownLocation = location
+
+        // set the location name every time we get a new location update for simplicity, can optimize later if this becomes an issue
+        lookUpCurrentLocation { [weak self] placemark in
+            DispatchQueue.main.async {
+                self?.currentLocationName = placemark?.name ?? "Unknown"
+            }
         }
     }
     
