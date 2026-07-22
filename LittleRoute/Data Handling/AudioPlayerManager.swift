@@ -7,6 +7,7 @@
 
 import Foundation
 import AVFoundation
+import MediaPlayer
 import SwiftUI
 import _SwiftData_SwiftUI
 
@@ -26,6 +27,62 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var playbackTimer: Timer?
     
     static let shared = AudioPlayerManager()
+
+    private override init() {
+        super.init()
+        configureAudioSession()
+        setupRemoteCommands()
+    }
+
+    // Configure the shared audio session for background playback.
+    // Requires the "audio" UIBackgroundMode (declared in Info.plist).
+    private func configureAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to configure audio session: \(error)")
+        }
+    }
+
+    // Lock screen / Control Center playback controls
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self = self, self.isPaused else { return .commandFailed }
+            self.musicPlayPause()
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self = self, !self.isPaused else { return .commandFailed }
+            self.musicPlayPause()
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            self?.musicPlayPause()
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            self?.skip()
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            self?.previous()
+            return .success
+        }
+    }
+
+    // Publish current song metadata to the lock screen / Control Center
+    private func updateNowPlayingInfo() {
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = currentSong?.title ?? "LittleRoute"
+        info[MPMediaItemPropertyArtist] = currentSong?.artist ?? "Unknown Artist"
+        info[MPMediaItemPropertyPlaybackDuration] = songLength
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = audioPlayer?.currentTime ?? 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPaused ? 0.0 : 1.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
     
     // Computed property for progress (0.0 to 1.0)
     var progress: Double {
@@ -215,6 +272,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             startPlaybackTimer()
         }
         
+        updateNowPlayingInfo()
         print("Audio Player is now \(isPaused ? "paused" : "playing")")
     }
     
@@ -234,6 +292,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         audioPlayer?.play()
         isPaused = false
         startPlaybackTimer()
+        updateNowPlayingInfo()
     }
     
     // Jump to a specific song already in the queue and play it
@@ -249,6 +308,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         audioPlayer?.play()
         isPaused = false
         startPlaybackTimer()
+        updateNowPlayingInfo()
     }
 
     public func previous() {
@@ -266,6 +326,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         audioPlayer?.play()
         isPaused = false
         startPlaybackTimer()
+        updateNowPlayingInfo()
     }
 
     // Toggle shuffle mode
@@ -352,6 +413,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             newPlayer.setVolume(1.0, fadeDuration: fadeDuration)
             self.isPaused = false
             self.startPlaybackTimer()
+            self.updateNowPlayingInfo()
         }
     }
 
