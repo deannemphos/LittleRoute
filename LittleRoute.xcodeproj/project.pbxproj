@@ -34,9 +34,22 @@
 		28D3DCCB2D00D87900CA0FC2 /* LittleRouteUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LittleRouteUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		28A909992FDB7C3300628392 /* Exceptions for "LittleRoute" folder in "LittleRoute" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 28D3DCAE2D00D87700CA0FC2 /* LittleRoute */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		28D3DCB12D00D87700CA0FC2 /* LittleRoute */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				28A909992FDB7C3300628392 /* Exceptions for "LittleRoute" folder in "LittleRoute" target */,
+			);
 			path = LittleRoute;
 			sourceTree = "<group>";
 		};
@@ -406,6 +419,7 @@
 				DEVELOPMENT_TEAM = GGSHGZJP85;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LittleRoute/Info.plist;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "LittleRoute uses your location to play music that matches your current surroundings.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -436,6 +450,7 @@
 				DEVELOPMENT_TEAM = GGSHGZJP85;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LittleRoute/Info.plist;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "LittleRoute uses your location to play music that matches your current surroundings.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
