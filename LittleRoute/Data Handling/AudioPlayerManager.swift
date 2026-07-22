@@ -19,9 +19,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var currentContext: Context = .all
     @Published var currentSong: Song? = nil // the currently playing song, if any
 
+    @Published private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
+
     private var audioPlayer: AVAudioPlayer?
     private var currentIndex: Int = 0 // index of the current song in the queue
-    private var songQueue: [Song] = []
     private var playbackTimer: Timer?
     
     static let shared = AudioPlayerManager()
@@ -72,6 +73,109 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         return loadedSongs
     }
     
+    // MARK: Song File Locations
+    // Directory where user-imported mp3s are stored (Documents/Music)
+    static var importedMusicDirectory: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Music", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    // Resolve a song file by name: bundled Music folder first, then imported files
+    static func url(forSongFile songName: String) -> URL? {
+        if let path = Bundle.main.path(forResource: songName, ofType: "mp3", inDirectory: "Music") {
+            return URL(fileURLWithPath: path)
+        }
+        let imported = importedMusicDirectory.appendingPathComponent("\(songName).mp3")
+        return FileManager.default.fileExists(atPath: imported.path) ? imported : nil
+    }
+
+    // Import user-selected mp3 files: copy into Documents/Music, read ID3
+    // title/artist when available, and insert new Song records.
+    @MainActor
+    public func importSongs(from urls: [URL], modelContext: ModelContext) async {
+        for url in urls {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+            let songName = url.deletingPathExtension().lastPathComponent
+            let destination = Self.importedMusicDirectory.appendingPathComponent("\(songName).mp3")
+
+            // Copy the file in (even if a Song record already exists from a
+            // previous failed attempt, the file may be missing)
+            if !FileManager.default.fileExists(atPath: destination.path) || !songExists(songName, in: modelContext) {
+                do {
+                    try Self.coordinatedCopy(from: url, to: destination)
+                } catch {
+                    print("Failed to copy imported song '\(songName)': \(error)")
+                    continue
+                }
+            }
+
+            // Skip the record insert for duplicates
+            if songExists(songName, in: modelContext) {
+                print("Song already exists, skipping record: \(songName)")
+                continue
+            }
+
+            // Pull title/artist from ID3 tags, falling back to the filename
+            var title = songName
+            var artist = "Unknown Artist"
+            let asset = AVURLAsset(url: destination)
+            if let metadata = try? await asset.load(.commonMetadata) {
+                if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle).first,
+                   let value = try? await item.load(.stringValue) {
+                    title = value
+                }
+                if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtist).first,
+                   let value = try? await item.load(.stringValue) {
+                    artist = value
+                }
+            }
+
+            let newSong = Song(title: title, songName: songName, artist: artist, locations: ["All"], populationMin: 0, populationMax: 10000000)
+            modelContext.insert(newSong)
+            print("Imported song: \(title)")
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            print("Failed to save imported songs: \(error)")
+        }
+
+        // Refresh the queue so new songs are playable immediately
+        let allSongs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
+        reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: allSongs)
+    }
+
+    private func songExists(_ songName: String, in modelContext: ModelContext) -> Bool {
+        let descriptor = FetchDescriptor<Song>(predicate: #Predicate { $0.songName == songName })
+        return ((try? modelContext.fetch(descriptor)) ?? []).isEmpty == false
+    }
+
+    // File-coordinated copy. The .forUploading option materializes files that
+    // aren't locally available yet (e.g. iCloud Drive items) before copying.
+    private static func coordinatedCopy(from source: URL, to destination: URL) throws {
+        var coordinatorError: NSError?
+        var copyError: Error?
+
+        NSFileCoordinator().coordinate(readingItemAt: source, options: .forUploading, error: &coordinatorError) { readURL in
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: readURL, to: destination)
+            } catch {
+                copyError = error
+            }
+        }
+
+        if let error = coordinatorError { throw error }
+        if let error = copyError { throw error }
+    }
+
     // all contexts the music will account for
     enum Context: String {
         case all = "All"
@@ -132,6 +236,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         startPlaybackTimer()
     }
     
+    // Jump to a specific song already in the queue and play it
+    public func play(song: Song) {
+        guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else {
+            print("Song not in queue: \(song.songName)")
+            return
+        }
+
+        currentIndex = index
+        currentSong = songQueue[currentIndex]
+        loadAudio(fileName: songQueue[currentIndex].songName)
+        audioPlayer?.play()
+        isPaused = false
+        startPlaybackTimer()
+    }
+
     public func previous() {
         guard !songQueue.isEmpty else {
             print("No songs in queue")
@@ -165,12 +284,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Prepare the audio player with the selected song
     private func loadAudio(fileName: String) {
         
-        guard let path = Bundle.main.path(forResource: fileName, ofType: "mp3", inDirectory: "Music") else {
+        guard let url = Self.url(forSongFile: fileName) else {
             print("Could not find file: \(fileName).mp3")
             return
         }
-        
-        let url = URL(fileURLWithPath: path)
         
         do {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
