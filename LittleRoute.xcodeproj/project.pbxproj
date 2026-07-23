@@ -418,7 +418,7 @@
 				DEVELOPMENT_ASSET_PATHS = "\"LittleRoute/Preview Content\"";
 				DEVELOPMENT_TEAM = GGSHGZJP85;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LittleRoute/Info.plist;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "LittleRoute uses your location to play music that matches your current surroundings.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
