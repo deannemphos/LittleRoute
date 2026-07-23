@@ -60,6 +60,29 @@ class ContextDetector: ObservableObject {
         pollTimer = nil
     }
 
+    // Force an immediate re-detection, bypassing the dwell window.
+    // Used by the "update context" button in the UI.
+    public func refreshNow() {
+        guard let locationHandler = locationHandler,
+              locationHandler.currentLocation != nil else { return }
+
+        locationHandler.getPointsOfInterest(radius: searchRadius) { [weak self] result in
+            guard let self = self, case .success(let places) = result else { return }
+            let observed = ContextClassifier.classify(
+                places: places,
+                userLocation: locationHandler.currentLocation
+            ) ?? .traveling
+            DispatchQueue.main.async {
+                self.candidateContext = nil
+                self.candidateSince = nil
+                guard observed != self.confirmedContext else { return }
+                self.confirmedContext = observed
+                print("ContextDetector: manual refresh switched context to \(observed.rawValue)")
+                self.onContextChange?(observed)
+            }
+        }
+    }
+
     // MARK: - Detection
     private func poll() {
         guard let locationHandler = locationHandler,
