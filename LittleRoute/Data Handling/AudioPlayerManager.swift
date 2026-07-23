@@ -163,7 +163,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             // previous failed attempt, the file may be missing)
             if !FileManager.default.fileExists(atPath: destination.path) || !songExists(songName, in: modelContext) {
                 do {
-                    try Self.coordinatedCopy(from: url, to: destination)
+                    try await Task.detached(priority: .userInitiated) {
+                        try Self.coordinatedCopy(from: url, to: destination)
+                    }.value
                 } catch {
                     print("Failed to copy imported song '\(songName)': \(error)")
                     continue
