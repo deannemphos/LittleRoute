@@ -54,7 +54,9 @@ struct ContentView: View {
         ZStack {
             Color.clear
                 .background(theme.background)
-                .filmGrain(intensity: theme.grainIntensity)
+            
+                // film grain shader over the background; disabled until I figure out the art style
+                // .filmGrain(intensity: theme.grainIntensity)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -78,6 +80,8 @@ struct ContentView: View {
                 // Spinning album disc with the circular map on top,
                 // song title + artist curving around the top of the disc
                 ZStack {
+
+                    // SpinningAlbumView(audioManager: audioManager, locationHandler: locationHandler, diameter: albumDiameter)
                     SpinningAlbumView(audioManager: audioManager, diameter: albumDiameter)
 
                     MapView(locationHandler: locationHandler, context: audioManager.currentContext)
