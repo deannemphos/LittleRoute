@@ -14,5 +14,5 @@ struct Context {
     let contextColor: Color                     // color/theme for background when in context 
     
     let radius: CLLocationDistance              // radius of a given zone, i.e. stores may have a smaller radius than parks 
-    let priority: int                           // priority level from 0-100 where 100 is the highest
+    let priority: Int                           // priority level from 0-100 where 100 is the highest
 }
