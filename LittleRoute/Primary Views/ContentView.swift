@@ -68,6 +68,9 @@ struct ContentView: View {
                     .shadow(color: theme == .y2k ? .white.opacity(0.9) : .clear, radius: 0, y: 1)
                     .shadow(color: theme.titleGlow, radius: 6, y: 3)
                     .padding(.top, 8)
+                
+                // Spinny circle tinted to the active context
+                ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
 
                 Text(theme == .y2k ? "✧ \(audioManager.currentContext.rawValue) ✧" : audioManager.currentContext.rawValue)
                     .font(.system(size: 15, weight: theme == .y2k ? .bold : .regular, design: theme == .y2k ? .rounded : .default))
