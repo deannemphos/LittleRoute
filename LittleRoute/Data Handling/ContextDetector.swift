@@ -18,6 +18,8 @@ class ContextDetector: ObservableObject {
 
     // MARK: - State
     @Published private(set) var confirmedContext: AudioPlayerManager.Context
+    @Published private(set) var zones: [ContextClassifier.Zone] = []
+    @Published private(set) var contextScores: [AudioPlayerManager.Context: Double] = [:]
     private(set) var candidateContext: AudioPlayerManager.Context?
     private(set) var candidateSince: Date?
 
@@ -34,7 +36,7 @@ class ContextDetector: ObservableObject {
          initialContext: AudioPlayerManager.Context = .all,
          pollInterval: TimeInterval = 10,
          dwellDuration: TimeInterval = 30,
-         searchRadius: CLLocationDistance = 100) {
+         searchRadius: CLLocationDistance = ContextClassifier.searchRadius) {
         self.locationHandler = locationHandler
         self.confirmedContext = initialContext
         self.pollInterval = pollInterval
@@ -66,13 +68,19 @@ class ContextDetector: ObservableObject {
         guard let locationHandler = locationHandler,
               locationHandler.currentLocation != nil else { return }
 
-        locationHandler.getPointsOfInterest(radius: searchRadius) { [weak self] result in
+        locationHandler.getPointsOfInterest(
+            radius: searchRadius,
+            filter: Array(ContextClassifier.categoryMap.keys)
+        ) { [weak self] result in
             guard let self = self, case .success(let places) = result else { return }
-            let observed = ContextClassifier.classify(
+            let evaluation = ContextClassifier.evaluate(
                 places: places,
                 userLocation: locationHandler.currentLocation
-            ) ?? .traveling
+            )
+            let observed = evaluation.context ?? .traveling
             DispatchQueue.main.async {
+                self.zones = evaluation.zones
+                self.contextScores = evaluation.scores
                 self.candidateContext = nil
                 self.candidateSince = nil
                 guard observed != self.confirmedContext else { return }
@@ -88,16 +96,21 @@ class ContextDetector: ObservableObject {
         guard let locationHandler = locationHandler,
               locationHandler.currentLocation != nil else { return }
 
-        locationHandler.getPointsOfInterest(radius: searchRadius) { [weak self] result in
+        locationHandler.getPointsOfInterest(
+            radius: searchRadius,
+            filter: Array(ContextClassifier.categoryMap.keys)
+        ) { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .success(let places):
-                let observed = ContextClassifier.classify(
+                let evaluation = ContextClassifier.evaluate(
                     places: places,
                     userLocation: locationHandler.currentLocation
                 )
                 DispatchQueue.main.async {
-                    self.process(observation: observed)
+                    self.zones = evaluation.zones
+                    self.contextScores = evaluation.scores
+                    self.process(observation: evaluation.context)
                 }
             case .failure(let error):
                 // Transient search failures shouldn't disturb the state machine
