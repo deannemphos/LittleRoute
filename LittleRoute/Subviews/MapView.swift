@@ -14,6 +14,8 @@ struct MapView: View {
     var context: AudioPlayerManager.Context
 
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
+    
+    /*
     @State private var visiblePOIs: [MKMapItem] = []
 
     // @TODO: remove this manual filtering, make it work with custom categories that can be set by the user in the future
@@ -36,7 +38,8 @@ struct MapView: View {
         case .traveling: return []
         }
     }
-
+    */
+    
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
