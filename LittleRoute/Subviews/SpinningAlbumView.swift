@@ -12,7 +12,6 @@ import AVFoundation
 
 struct SpinningAlbumView: View {
     @ObservedObject var audioManager: AudioPlayerManager
-    @ObservedObject var locationHandler: LocationHandler
 
     let diameter: CGFloat
 
