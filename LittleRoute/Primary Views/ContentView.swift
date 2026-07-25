@@ -87,7 +87,10 @@ struct ContentView: View {
                     // SpinningAlbumView(audioManager: audioManager, locationHandler: locationHandler, diameter: albumDiameter)
                     SpinningAlbumView(audioManager: audioManager, diameter: albumDiameter)
 
-                    MapView(locationHandler: locationHandler, context: audioManager.currentContext)
+                    MapView(
+                        contextDetector: contextDetector,
+                        context: audioManager.currentContext
+                    )
                         .frame(width: mapDiameter, height: mapDiameter)
                         .clipShape(Circle())
                         .overlay(Circle().strokeBorder(theme.rim, lineWidth: theme.rimWidth))
