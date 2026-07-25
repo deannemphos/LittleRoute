@@ -5,19 +5,17 @@
 //  Created by Dean Nemphos on 5/14/26.
 //
 
-
 import SwiftUI
 import MapKit
 
 struct MapView: View {
-    @ObservedObject var locationHandler: LocationHandler
+    @ObservedObject var contextDetector: ContextDetector
     var context: AudioPlayerManager.Context
 
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     
     /*
     @State private var visiblePOIs: [MKMapItem] = []
-
     // @TODO: remove this manual filtering, make it work with custom categories that can be set by the user in the future
     // Maps the active audio context to relevant MapKit POI categories
     private var contextCategories: [MKPointOfInterestCategory] {
@@ -42,36 +40,63 @@ struct MapView: View {
     
     var body: some View {
         Map(position: $position) {
-            UserAnnotation()
+            ForEach(contextDetector.zones) { zone in
+                let color = color(for: zone.context)
+                let isActive = zone.context == context
 
-            ForEach(visiblePOIs, id: \.self) { item in
-                Annotation(item.name ?? "", coordinate: item.placemark.coordinate) {
-                    Image(systemName: "mappin.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(Color.accentColor)
+                MapCircle(center: zone.coordinate, radius: zone.radius)
+                    .foregroundStyle(color.opacity(isActive ? 0.28 : 0.12))
+                    .stroke(color.opacity(isActive ? 0.95 : 0.55), lineWidth: isActive ? 3 : 1)
+
+                Annotation(zone.name, coordinate: zone.coordinate) {
+                    Image(systemName: icon(for: zone.context))
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(color, in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.9), lineWidth: isActive ? 2 : 1))
                 }
             }
+
+            UserAnnotation()
         }
         .mapControls {
             MapUserLocationButton()
             MapCompass()
             MapScaleView()
         }
-        .onAppear { refreshPOIs() }
-        .onChange(of: locationHandler.currentLocation) { _, _ in refreshPOIs() }
-        .onChange(of: context) { _, _ in refreshPOIs() }
+        .accessibilityLabel("Nearby music context zones")
     }
 
-    private func refreshPOIs() {
-        let categories = contextCategories
-        guard !categories.isEmpty else {
-            visiblePOIs = []
-            return
+    private func color(for context: AudioPlayerManager.Context) -> Color {
+        context.tintColor
+    }
+
+    private func icon(for context: AudioPlayerManager.Context) -> String {
+        switch context {
+        case .beach: return "water.waves"
+        case .park: return "leaf.fill"
+        case .gym: return "figure.run"
+        case .restaurant: return "fork.knife"
+        case .store: return "bag.fill"
+        case .city: return "building.2.fill"
+        default: return "mappin"
         }
-        locationHandler.getPointsOfInterest(radius: 500, filter: categories) { result in
-            if case .success(let items) = result {
-                visiblePOIs = items
-            }
+    }
+}
+
+// Shared context accent color, used for map zones and the main view's
+// background tint.
+extension AudioPlayerManager.Context {
+    var tintColor: Color {
+        switch self {
+        case .beach: return .cyan
+        case .park: return .green
+        case .gym: return .orange
+        case .restaurant: return .red
+        case .store: return .purple
+        case .city: return .blue
+        default: return .gray
         }
     }
 }
