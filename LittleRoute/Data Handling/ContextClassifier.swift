@@ -20,18 +20,20 @@ struct ContextClassifier {
         let score: Double
     }
 
-    struct Evaluation {
-        let context: AudioPlayerManager.Context?
-        let scores: [AudioPlayerManager.Context: Double]
-        let zones: [Zone]
-    }
-
     // @TODO: Implement this and integrate it into the scoring algorithm
     // Outside factors that may affect context; stuff like weather and speed
     struct Factors {
         let weather: Int        // Replace this with Apple's weather API
         let speed: Int          // Replace this with some kind of speed estimate 
     }
+
+    struct Evaluation {
+        let context: AudioPlayerManager.Context?
+        let factors: [Factors]?
+        let scores: [AudioPlayerManager.Context: Double]
+        let zones: [Zone]
+    }
+
 
     // Larger, less common places influence a wider area. Common, compact places
     // need the user to be closer before they outweigh their surroundings.
