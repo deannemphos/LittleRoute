@@ -23,8 +23,10 @@ struct ContextClassifier {
     // @TODO: Implement this and integrate it into the scoring algorithm
     // Outside factors that may affect context; stuff like weather and speed
     struct Factors {
-        let weather: Int        // Replace this with Apple's weather API
-        let speed: Int          // Replace this with some kind of speed estimate 
+        let weather: Int?        // Replace this with Apple's weather API
+        let speed: Int?          // Replace this with some kind of speed estimate 
+        let heartRate: Int?      // Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
+        let isRunning: Bool?     // healthkit should be able to track this
     }
 
     struct Evaluation {
