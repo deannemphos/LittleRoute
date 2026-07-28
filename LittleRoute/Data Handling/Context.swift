@@ -9,7 +9,10 @@ import MapKit
 // @NOTE: define Context with var when instantiating, otherwise categories become immutable
 struct Context {
     var categories: [MKPointOfInterestCategory] // all POI categories in this context
-    var isEndabled: Bool                        // are we checking for this context
+    var isEnabled: Bool                         // are we checking for this context
     let name: String                            // user defined name of context
     let contextColor: Color                     // color/theme for background when in context 
+    
+    let radius: CLLocationDistance              // radius of a given zone, i.e. stores may have a smaller radius than parks 
+    let priority: Int                           // priority level from 0-100 where 100 is the highest
 }

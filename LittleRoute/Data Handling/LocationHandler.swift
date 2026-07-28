@@ -64,7 +64,11 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         // Build a region centered on current coordinate
-        let region = MKCoordinateRegion(center: currentLocation.coordinate, latitudinalMeters: radius, longitudinalMeters: radius)
+        let region = MKCoordinateRegion(
+            center: currentLocation.coordinate,
+            latitudinalMeters: radius * 2,
+            longitudinalMeters: radius * 2
+        )
 
         let request = MKLocalSearch.Request()
         request.region = region

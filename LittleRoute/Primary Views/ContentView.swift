@@ -54,7 +54,9 @@ struct ContentView: View {
         ZStack {
             Color.clear
                 .background(theme.background)
-                .filmGrain(intensity: theme.grainIntensity)
+            
+                // film grain shader over the background; disabled until I figure out the art style
+                // .filmGrain(intensity: theme.grainIntensity)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -66,6 +68,9 @@ struct ContentView: View {
                     .shadow(color: theme == .y2k ? .white.opacity(0.9) : .clear, radius: 0, y: 1)
                     .shadow(color: theme.titleGlow, radius: 6, y: 3)
                     .padding(.top, 8)
+                
+                // Spinny circle tinted to the active context
+                ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
 
                 Text(theme == .y2k ? "✧ \(audioManager.currentContext.rawValue) ✧" : audioManager.currentContext.rawValue)
                     .font(.system(size: 15, weight: theme == .y2k ? .bold : .regular, design: theme == .y2k ? .rounded : .default))
@@ -78,9 +83,14 @@ struct ContentView: View {
                 // Spinning album disc with the circular map on top,
                 // song title + artist curving around the top of the disc
                 ZStack {
+
+                    // SpinningAlbumView(audioManager: audioManager, locationHandler: locationHandler, diameter: albumDiameter)
                     SpinningAlbumView(audioManager: audioManager, diameter: albumDiameter)
 
-                    MapView(locationHandler: locationHandler, context: audioManager.currentContext)
+                    MapView(
+                        contextDetector: contextDetector,
+                        context: audioManager.currentContext
+                    )
                         .frame(width: mapDiameter, height: mapDiameter)
                         .clipShape(Circle())
                         .overlay(Circle().strokeBorder(theme.rim, lineWidth: theme.rimWidth))

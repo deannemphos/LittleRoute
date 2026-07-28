@@ -12,7 +12,7 @@ struct ContextClassifierTests {
 
     @Test func mapsKnownCategoriesToContexts() {
         #expect(ContextClassifier.context(for: .beach) == .beach)
-        #expect(ContextClassifier.context(for: .shoppingCenter) == .store)
+        #expect(ContextClassifier.context(for: .store) == .store)
         #expect(ContextClassifier.context(for: .fitnessCenter) == .gym)
         #expect(ContextClassifier.context(for: .restaurant) == .restaurant)
         #expect(ContextClassifier.context(for: .park) == .park)
@@ -29,20 +29,51 @@ struct ContextClassifierTests {
         #expect(result == nil)
     }
 
-    @Test func classifyPicksNearestMappablePlace() {
+    @Test func classifyPicksOnlyPlaceWithinItsEffectiveRadius() {
         let user = CLLocation(latitude: 0, longitude: 0)
-        // beach is farther than the shopping center
         let far = mapItem(category: .beach, latitude: 0.01, longitude: 0.01)
-        let near = mapItem(category: .shoppingCenter, latitude: 0.001, longitude: 0.001)
+        let near = mapItem(category: .store, metersEast: 60)
 
         let result = ContextClassifier.classify(places: [far, near], userLocation: user)
         #expect(result == .store)
     }
 
+    @Test func largerContextCanOutscoreCloserCommonPlace() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let park = mapItem(category: .park, metersEast: 150)
+        let restaurant = mapItem(category: .restaurant, metersEast: 50)
+
+        let evaluation = ContextClassifier.evaluate(places: [restaurant, park], userLocation: user)
+
+        #expect(evaluation.context == .park)
+        #expect(evaluation.scores[.park, default: 0] > evaluation.scores[.restaurant, default: 0])
+    }
+
+    @Test func placesOutsideEffectiveRadiusRemainVisibleButDoNotScore() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 75)
+
+        let evaluation = ContextClassifier.evaluate(places: [restaurant], userLocation: user)
+
+        #expect(evaluation.context == nil)
+        #expect(evaluation.scores.isEmpty)
+        #expect(evaluation.zones.count == 1)
+        #expect(evaluation.zones.first?.score == 0)
+    }
+
+    @Test func contextProfilesUseDifferentEffectiveRadii() {
+        let parkRadius = ContextClassifier.profile(for: .park)?.effectiveRadius
+        let restaurantRadius = ContextClassifier.profile(for: .restaurant)?.effectiveRadius
+
+        #expect(parkRadius != nil)
+        #expect(restaurantRadius != nil)
+        #expect(parkRadius! > restaurantRadius!)
+    }
+
     @Test func classifyIgnoresUnmappablePlaces() {
         let user = CLLocation(latitude: 0, longitude: 0)
         let unmapped = mapItem(category: .police, latitude: 0.0001, longitude: 0.0001) // nearest, but unmapped
-        let beach = mapItem(category: .beach, latitude: 0.01, longitude: 0.01)
+        let beach = mapItem(category: .beach, metersEast: 200)
 
         let result = ContextClassifier.classify(places: [unmapped, beach], userLocation: user)
         #expect(result == .beach)
@@ -53,6 +84,10 @@ struct ContextClassifierTests {
         let item = MKMapItem(placemark: placemark)
         item.pointOfInterestCategory = category
         return item
+    }
+
+    private func mapItem(category: MKPointOfInterestCategory, metersEast: Double) -> MKMapItem {
+        mapItem(category: category, latitude: 0, longitude: metersEast / 111_320)
     }
 }
 
