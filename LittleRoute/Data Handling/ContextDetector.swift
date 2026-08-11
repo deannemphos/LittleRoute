@@ -184,15 +184,92 @@ class ContextDetector: ObservableObject {
         }
     }
 
+    // Snapshot of the live external factors feeding the classifier.
+    private func currentFactors() -> ContextClassifier.Factors {
+        ContextClassifier.Factors(weather: latestWeather, speed: currentSpeed())
+    }
+
+    // MARK: - Debt
+    // Advances every context's debt by the time elapsed since the last tick.
+    // Only the confirmed context accrues, and ONLY while the user is moving —
+    // sitting still (e.g. at the library) never builds debt. Everything else
+    // (including the confirmed context while stationary) drains at the same
+    // rate. Exposed as internal (not private) for unit testing.
+    func tickDebt(isMoving: Bool) {
+        let currentTime = now()
+        defer { lastDebtTick = currentTime }
+        guard let lastTick = lastDebtTick else { return }
+
+        let elapsed = currentTime.timeIntervalSince(lastTick)
+        guard elapsed > 0 else { return }
+        let delta = ContextClassifier.maxDebt * (elapsed / debtAccumulationDuration)
+
+        var updated = debts
+        for context in Set(updated.keys).union([confirmedContext]) {
+            let accruing = isMoving && context == confirmedContext
+            let balance = (updated[context] ?? 0) + (accruing ? delta : -delta)
+            updated[context] = min(max(balance, 0), ContextClassifier.maxDebt)
+        }
+        debts = updated.filter { $0.value > 0 }
+
+        // Release the switch buffer early once the departed context's debt
+        // has fully ticked back down.
+        if let buffered = bufferedContext, debts[buffered] == nil {
+            clearBuffer()
+        }
+    }
+
+    func debt(for context: AudioPlayerManager.Context) -> Double {
+        debts[context] ?? 0
+    }
+
+    // Best-effort current speed in m/s. Prefers the GPS speed reading; when
+    // it's unavailable (CLLocation reports -1), falls back to displacement
+    // between polls. nil when speed can't be determined at all.
+    private func currentSpeed() -> CLLocationSpeed? {
+        guard let location = locationHandler?.currentLocation else { return nil }
+        defer { lastTickLocation = location }
+
+        if location.speed >= 0 {
+            return location.speed
+        }
+        guard let previous = lastTickLocation else { return nil }
+        let elapsed = location.timestamp.timeIntervalSince(previous.timestamp)
+        guard elapsed > 0 else { return nil }
+        return location.distance(from: previous) / elapsed
+    }
+
+    private func clearBuffer() {
+        bufferedContext = nil
+        bufferExpiry = nil
+    }
+
+    private func isBuffered(_ context: AudioPlayerManager.Context) -> Bool {
+        guard let bufferedContext, let bufferExpiry else { return false }
+        guard now() < bufferExpiry else {
+            clearBuffer()
+            return false
+        }
+        return context == bufferedContext
+    }
+
     // State machine: promote an observed context to confirmed only after it
     // has been observed continuously for dwellDuration. A nil observation
     // (no mappable POI nearby) is treated as a .traveling candidate.
+    //
+    // `observationIgnoringDebt` is what would have won without debt applied.
+    // When the two disagree at promotion time, the switch was debt-driven and
+    // the departed context enters the buffer: it can't win again until the
+    // buffer window elapses or its debt drains, whichever comes first.
     // Exposed as internal (not private) for unit testing.
-    func process(observation: AudioPlayerManager.Context?) {
+    func process(observation: AudioPlayerManager.Context?,
+                 observationIgnoringDebt: AudioPlayerManager.Context? = nil) {
         let observedContext = observation ?? .traveling
+        let debtFreeWinner = observationIgnoringDebt ?? observation
 
-        if observedContext == confirmedContext {
-            // Still in the same area — drop any pending candidate
+        if observedContext == confirmedContext || isBuffered(observedContext) {
+            // Still in the same area — or seeing a context that's serving its
+            // buffer sentence — drop any pending candidate
             candidateContext = nil
             candidateSince = nil
             return
@@ -207,6 +284,12 @@ class ContextDetector: ObservableObject {
 
         // Same candidate as before — promote once the dwell window has elapsed
         if let since = candidateSince, now().timeIntervalSince(since) >= dwellDuration {
+            // Debt-driven switch: without debt the confirmed context would
+            // still be winning. Buffer it so we can't flap right back.
+            if debtFreeWinner == confirmedContext {
+                bufferedContext = confirmedContext
+                bufferExpiry = now().addingTimeInterval(switchBufferDuration)
+            }
             confirmedContext = observedContext
             candidateContext = nil
             candidateSince = nil
