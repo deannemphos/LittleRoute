@@ -5,10 +5,9 @@ import MapKit
 struct ContextClassifier {
     struct Profile {
         let effectiveRadius: CLLocationDistance
-        // let weight: Double
-        
+
         let specificity: Double // How specific this context is, a higher specificity means it's less common and should be weighted more heavily in the scoring algorithm
-        let debt: Double // how much "debt" this one is compared to other contexts. Accumulate debt the longer a context has been active for so less common contexts can be prioritized occasionally
+        let debt: Double // Baseline "debt" for this context. Runtime debt accumulates on top of this (see ContextDetector.debts) the longer a context has been active while traveling, so less common contexts can be prioritized occasionally
     }
 
     struct Zone: Identifiable {
@@ -20,20 +19,60 @@ struct ContextClassifier {
         let score: Double
     }
 
-    // @TODO: Implement this and integrate it into the scoring algorithm
-    // Outside factors that may affect context; stuff like weather and speed
+    // Outside factors that may affect context beyond POI proximity.
+    // Weather and speed are live; heart rate / running state are still stubs.
     struct Factors {
-        let weather: Int?        // Replace this with Apple's weather API
-        let speed: Int?          // Replace this with some kind of speed estimate 
-        let heartRate: Int?      // Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
-        let isRunning: Bool?     // healthkit should be able to track this
+        // Simplified weather buckets — we only care about conditions that
+        // change what music fits, not full meteorology.
+        enum Condition {
+            case clear
+            case rainy
+            case snowy
+        }
+
+        var weather: Condition? = nil       // from WeatherProviding (WeatherKit)
+        var speed: CLLocationSpeed? = nil   // m/s, from CoreLocation
+        var heartRate: Int? = nil           // @TODO: Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
+        var isRunning: Bool? = nil          // @TODO: healthkit should be able to track this
+    }
+
+    // Above this speed the user is unambiguously in a vehicle — classify as
+    // traveling no matter what POIs are nearby. 35 mph, expressed in m/s.
+    static let travelingSpeedThreshold: CLLocationSpeed = 35 * 0.44704
+
+    // Hard overrides that trump POI scoring entirely.
+    // Rain/snow beats everything (including speed); high speed beats POIs.
+    static func contextOverride(for factors: Factors) -> AudioPlayerManager.Context? {
+        switch factors.weather {
+        case .rainy: return .rainy
+        case .snowy: return .snowy
+        case .clear, nil: break
+        }
+        if let speed = factors.speed, speed > travelingSpeedThreshold {
+            return .traveling
+        }
+        return nil
     }
 
     struct Evaluation {
         let context: AudioPlayerManager.Context?
-        let factors: [Factors]?
+        // What would have won on proximity × specificity alone. When this differs
+        // from `context`, accumulated debt changed the outcome — ContextDetector
+        // uses that signal to arm the anti-flapping switch buffer.
+        let contextIgnoringDebt: AudioPlayerManager.Context?
+        var factors: [Factors]? = nil
         let scores: [AudioPlayerManager.Context: Double]
         let zones: [Zone]
+    }
+
+    // Debt tuning: a fully indebted context loses up to half of its score —
+    // enough for any other nearby context to overtake it at comparable
+    // proximity, but never enough to zero a context out entirely. Debt alone
+    // can therefore never force a switch; a competing zone must be observed.
+    static let maxDebt: Double = 0.5
+
+    static func debtMultiplier(for debt: Double) -> Double {
+        1.0 - min(max(debt, 0), maxDebt)
     }
 
 
