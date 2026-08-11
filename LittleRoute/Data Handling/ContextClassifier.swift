@@ -131,9 +131,18 @@ struct ContextClassifier {
         evaluate(places: places, userLocation: userLocation).context
     }
 
-    static func evaluate(places: [MKMapItem], userLocation: CLLocation?) -> Evaluation {
+    // `debts` carries the runtime debt level (0...maxDebt) per context, managed
+    // by ContextDetector. Scores are proximity × specificity × debt multiplier.
+    // `factors` (weather/speed) can hard-override the POI winner entirely.
+    static func evaluate(places: [MKMapItem],
+                         userLocation: CLLocation?,
+                         debts: [AudioPlayerManager.Context: Double] = [:],
+                         factors: Factors? = nil) -> Evaluation {
+        let override = factors.flatMap { contextOverride(for: $0) }
+
         guard let userLocation else {
-            return Evaluation(context: nil, scores: [:], zones: [])
+            return Evaluation(context: override, contextIgnoringDebt: override,
+                              factors: factors.map { [$0] }, scores: [:], zones: [])
         }
 
         var contributions: [AudioPlayerManager.Context: [Double]] = [:]
@@ -148,7 +157,7 @@ struct ContextClassifier {
 
             let distance = userLocation.distance(from: placeLocation)
             let proximity = max(0, 1 - (distance / profile.effectiveRadius))
-            let score = proximity * profile.weight
+            let score = proximity * profile.specificity
             zones.append(
                 Zone(
                     id: zoneID(for: item, context: context),
@@ -167,20 +176,40 @@ struct ContextClassifier {
         // The strongest POI defines most of a context's score. Additional nearby
         // POIs add limited evidence so dense restaurant/store clusters do not win
         // solely because those categories are more common in MapKit.
-        let scores = contributions.mapValues { values in
+        let rawScores = contributions.mapValues { values in
             let sorted = values.sorted(by: >)
             return sorted.enumerated().reduce(0) { total, entry in
                 total + entry.element * pow(0.25, Double(entry.offset))
             }
         }
-        let winner = scores.max { lhs, rhs in
+
+        // Debt discounts a context that has been active for a while, giving
+        // less common neighbors a fair shake — but only contexts that are
+        // physically present can win, so debt can never switch on its own.
+        let scores = Dictionary(uniqueKeysWithValues: rawScores.map { context, score in
+            let debt = (debts[context] ?? 0) + (profile(for: context)?.debt ?? 0)
+            return (context, score * debtMultiplier(for: debt))
+        })
+
+        // Zones and scores are still computed under an override so the map can
+        // keep showing nearby context areas — the override only decides the
+        // winner.
+        return Evaluation(
+            context: override ?? winner(of: scores),
+            contextIgnoringDebt: override ?? winner(of: rawScores),
+            factors: factors.map { [$0] },
+            scores: scores,
+            zones: zones
+        )
+    }
+
+    private static func winner(of scores: [AudioPlayerManager.Context: Double]) -> AudioPlayerManager.Context? {
+        scores.max { lhs, rhs in
             if lhs.value == rhs.value {
                 return lhs.key.rawValue > rhs.key.rawValue
             }
             return lhs.value < rhs.value
         }?.key
-
-        return Evaluation(context: winner, scores: scores, zones: zones)
     }
 
     private static func zoneID(for item: MKMapItem, context: AudioPlayerManager.Context) -> String {
