@@ -9,6 +9,12 @@ import MapKit
 // observed for `dwellDuration` — this avoids music flapping when walking
 // along the boundary of two areas. When no mappable POI is observed for a
 // full dwell window, falls back to the generic .traveling context.
+//
+// Debt: the confirmed context accrues "debt" over time, but ONLY while the
+// user is actively moving — sitting inside the library keeps the library
+// context indefinitely. Debt discounts that context's score so common POIs
+// (restaurants, stores) can't dominate a whole city walk. Debt by itself can
+// never force a switch: a competing zone must actually be observed.
 class ContextDetector: ObservableObject {
 
     // MARK: - Configuration
@@ -16,12 +22,39 @@ class ContextDetector: ObservableObject {
     let dwellDuration: TimeInterval  // how long a candidate context must persist before switching
     let searchRadius: CLLocationDistance
 
+    // Time of continuous movement for the confirmed context to reach full debt.
+    // User-tunable via UserDefaults (see debtAccumulationDefaultsKey);
+    // defaults to 8 minutes. Drop to 120 for field testing.
+    let debtAccumulationDuration: TimeInterval
+    static let defaultDebtAccumulationDuration: TimeInterval = 8 * 60
+    static let debtAccumulationDefaultsKey = "contextDebtAccumulationDuration"
+
+    // Buffer window after a debt-driven switch: the context we just left can't
+    // win again until this elapses or its debt drains, whichever comes first.
+    // Prevents jittery back-and-forth flapping in POI-cluttered areas.
+    let switchBufferDuration: TimeInterval
+
+    // Speeds above this (m/s) count as "actively traveling" — roughly a slow walk.
+    private let movementSpeedThreshold: CLLocationSpeed = 0.5
+
+    // Source of current weather conditions; nil disables weather overrides.
+    private let weatherProvider: WeatherProviding?
+
     // MARK: - State
     @Published private(set) var confirmedContext: AudioPlayerManager.Context
     @Published private(set) var zones: [ContextClassifier.Zone] = []
     @Published private(set) var contextScores: [AudioPlayerManager.Context: Double] = [:]
+    // Latest known weather bucket, refreshed each poll (heavily cached upstream)
+    @Published private(set) var latestWeather: ContextClassifier.Factors.Condition?
+    // Runtime debt per context, 0...ContextClassifier.maxDebt. Only contexts
+    // with a nonzero balance are present.
+    @Published private(set) var debts: [AudioPlayerManager.Context: Double] = [:]
     private(set) var candidateContext: AudioPlayerManager.Context?
     private(set) var candidateSince: Date?
+    private(set) var bufferedContext: AudioPlayerManager.Context?
+    private(set) var bufferExpiry: Date?
+    private var lastDebtTick: Date?
+    private var lastTickLocation: CLLocation?
 
     // Fired on the main thread whenever a new context is confirmed
     var onContextChange: ((AudioPlayerManager.Context) -> Void)?
@@ -36,12 +69,21 @@ class ContextDetector: ObservableObject {
          initialContext: AudioPlayerManager.Context = .all,
          pollInterval: TimeInterval = 10,
          dwellDuration: TimeInterval = 30,
-         searchRadius: CLLocationDistance = ContextClassifier.searchRadius) {
+         searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
+         debtAccumulationDuration: TimeInterval? = nil,
+         switchBufferDuration: TimeInterval = 180,
+         weatherProvider: WeatherProviding? = WeatherKitProvider()) {
         self.locationHandler = locationHandler
         self.confirmedContext = initialContext
         self.pollInterval = pollInterval
         self.dwellDuration = dwellDuration
         self.searchRadius = searchRadius
+
+        let stored = UserDefaults.standard.double(forKey: Self.debtAccumulationDefaultsKey)
+        self.debtAccumulationDuration = debtAccumulationDuration
+            ?? (stored > 0 ? stored : Self.defaultDebtAccumulationDuration)
+        self.switchBufferDuration = switchBufferDuration
+        self.weatherProvider = weatherProvider
     }
 
     deinit {
@@ -73,16 +115,19 @@ class ContextDetector: ObservableObject {
             filter: Array(ContextClassifier.categoryMap.keys)
         ) { [weak self] result in
             guard let self = self, case .success(let places) = result else { return }
-            let evaluation = ContextClassifier.evaluate(
-                places: places,
-                userLocation: locationHandler.currentLocation
-            )
-            let observed = evaluation.context ?? .traveling
             DispatchQueue.main.async {
+                let evaluation = ContextClassifier.evaluate(
+                    places: places,
+                    userLocation: locationHandler.currentLocation,
+                    debts: self.debts,
+                    factors: self.currentFactors()
+                )
+                let observed = evaluation.context ?? .traveling
                 self.zones = evaluation.zones
                 self.contextScores = evaluation.scores
                 self.candidateContext = nil
                 self.candidateSince = nil
+                self.clearBuffer() // an explicit user request overrides the anti-flap buffer
                 guard observed != self.confirmedContext else { return }
                 self.confirmedContext = observed
                 print("ContextDetector: manual refresh switched context to \(observed.rawValue)")
@@ -94,7 +139,20 @@ class ContextDetector: ObservableObject {
     // MARK: - Detection
     private func poll() {
         guard let locationHandler = locationHandler,
-              locationHandler.currentLocation != nil else { return }
+              let location = locationHandler.currentLocation else { return }
+
+        let speed = currentSpeed()
+
+        // Refresh weather out-of-band; the next evaluation picks up the stored
+        // value. Skipped entirely at highway speeds (>35mph) — the speed
+        // override decides the context anyway, so don't burn WeatherKit quota
+        // from a moving car. The last known condition is kept until the user
+        // slows back down and the fetch resumes.
+        if (speed ?? 0) <= ContextClassifier.travelingSpeedThreshold {
+            weatherProvider?.currentCondition(at: location) { [weak self] condition in
+                self?.latestWeather = condition
+            }
+        }
 
         locationHandler.getPointsOfInterest(
             radius: searchRadius,
@@ -103,14 +161,21 @@ class ContextDetector: ObservableObject {
             guard let self = self else { return }
             switch result {
             case .success(let places):
-                let evaluation = ContextClassifier.evaluate(
-                    places: places,
-                    userLocation: locationHandler.currentLocation
-                )
                 DispatchQueue.main.async {
+                    let factors = ContextClassifier.Factors(weather: self.latestWeather, speed: speed)
+                    self.tickDebt(isMoving: (speed ?? 0) >= self.movementSpeedThreshold)
+                    let evaluation = ContextClassifier.evaluate(
+                        places: places,
+                        userLocation: locationHandler.currentLocation,
+                        debts: self.debts,
+                        factors: factors
+                    )
                     self.zones = evaluation.zones
                     self.contextScores = evaluation.scores
-                    self.process(observation: evaluation.context)
+                    self.process(
+                        observation: evaluation.context,
+                        observationIgnoringDebt: evaluation.contextIgnoringDebt
+                    )
                 }
             case .failure(let error):
                 // Transient search failures shouldn't disturb the state machine
