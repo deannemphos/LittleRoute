@@ -186,7 +186,7 @@ struct ContextClassifier {
         // Debt discounts a context that has been active for a while, giving
         // less common neighbors a fair shake — but only contexts that are
         // physically present can win, so debt can never switch on its own.
-        let scores = Dictionary(uniqueKeysWithValues: rawScores.map { context, score in
+        let scores = Dictionary(uniqueKeysWithValues: rawScores.map { (context, score) in
             let debt = (debts[context] ?? 0) + (profile(for: context)?.debt ?? 0)
             return (context, score * debtMultiplier(for: debt))
         })
