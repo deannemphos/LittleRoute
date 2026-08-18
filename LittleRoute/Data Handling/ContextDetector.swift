@@ -80,8 +80,8 @@ class ContextDetector: ObservableObject {
         self.searchRadius = searchRadius
 
         let stored = UserDefaults.standard.double(forKey: Self.debtAccumulationDefaultsKey)
-        self.debtAccumulationDuration = debtAccumulationDuration
-            ?? (stored > 0 ? stored : Self.defaultDebtAccumulationDuration)
+        let resolved = debtAccumulationDuration ?? (stored > 0 ? stored : Self.defaultDebtAccumulationDuration)
+        self.debtAccumulationDuration = resolved > 0 ? resolved : Self.defaultDebtAccumulationDuration
         self.switchBufferDuration = switchBufferDuration
         self.weatherProvider = weatherProvider
     }
