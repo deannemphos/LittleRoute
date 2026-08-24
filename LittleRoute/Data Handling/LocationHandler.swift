@@ -9,12 +9,10 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: - Properties
     private let locationManager = CLLocationManager()
     
+    // keep this list short: ContentView observes the whole object just to read
+    // authorizationStatus, so anything published here re-invalidates its body.
     @Published var authorizationStatus: CLAuthorizationStatus?
     @Published var currentLocation: CLLocation?
-    @Published var currentLocationName: String = "Unknown" // User-friendly name for the current location, updated via reverse geocoding in lookUpCurrentLocation
-    @Published var lastKnownLocation: CLLocation? // potentially use to inform next song choice? pass this through an AI model for a monetized "better" music transition?
-    @Published var nearbyPlaces: [MKMapItem] = []
-    @Published var locationError: Error?
 
     // Throttling: accept a new location only after this much time has passed
     // since the last accepted update, or when the user has moved farther than
@@ -81,42 +79,14 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
 
         let search = MKLocalSearch(request: request)
-        search.start { [weak self] (response: MKLocalSearch.Response?, error: Error?) in
+        search.start { (response: MKLocalSearch.Response?, error: Error?) in
             if let error = error {
                 completion(.failure(error))
                 return
             }
-            let items = response?.mapItems ?? []
-            DispatchQueue.main.async {
-                self?.nearbyPlaces = items
-            }
-            completion(.success(items))
-        }
-    }
-    
-    // ripped from apple docs -- https://developer.apple.com/documentation/corelocation/converting-between-coordinates-and-user-friendly-place-names
-    // reverse geocodes the current location (CLlocation just gives coordinates and shit) to get a user-friendly place name (i.e. Betty's)
-    public func lookUpCurrentLocation(completionHandler: @escaping (CLPlacemark?) -> Void ) {
-        // Use the last reported location.
-        if let lastLocation = self.locationManager.location {
-            let geocoder = CLGeocoder()
-                
-            // Look up the location and pass it to the completion handler
-            geocoder.reverseGeocodeLocation(lastLocation,
-                        completionHandler: { (placemarks, error) in
-                if error == nil {
-                    let firstLocation = placemarks?[0]
-                    completionHandler(firstLocation)
-                }
-                else {
-                 // An error occurred during geocoding.
-                    completionHandler(nil)
-                }
-            })
-        }
-        else {
-            // No location was available.
-            completionHandler(nil)
+            // results go to the caller only -- we deliberately don't stash them on
+            // the handler, that used to republish on every poll for nobody's benefit
+            completion(.success(response?.mapItems ?? []))
         }
     }
 
@@ -160,19 +130,15 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
         lastAcceptedTime = Date()
 
         currentLocation = location
-        lastKnownLocation = location
-
-        // set the location name every time we get a new location update for simplicity, can optimize later if this becomes an issue
-        lookUpCurrentLocation { [weak self] placemark in
-            DispatchQueue.main.async {
-                self?.currentLocationName = placemark?.name ?? "Unknown"
-            }
-        }
     }
-    
+
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        locationError = error
+        // this used to land in a published var nobody read, which is a fancy way of
+        // saying it vanished. print keeps it visible until LR-26 swaps in a Logger.
+        // @TODO: replace with Logger(subsystem:category:) and decide whether the user
+        //        ever needs to see this (kCLErrorLocationUnknown is transient noise)
+        print("**ERROR: location manager failed -- \(error.localizedDescription)")
     }
 }
 
