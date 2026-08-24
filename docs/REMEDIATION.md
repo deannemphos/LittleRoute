@@ -28,6 +28,22 @@ Therefore:
 - If a task's "Done when" requires a build or a device, treat it as the
   reviewer's checklist, not yours.
 
+**The file lists below are indicative, not exhaustive.**
+
+They were compiled by reading the codebase, not by exhaustively grepping it, and
+at least one has already proved incomplete: LR-01's list omitted
+`ContextRingView.swift`, which declared the very type that task renames. The
+agent found it by grepping rather than trusting the list.
+
+So: **treat each task's file list as a starting point and verify it yourself.**
+Grep for the symbol, type, or API you are changing across the whole repo before
+you decide the task is done. If you find a site the list missed, handle it and
+say so in your report — that is the list being wrong, not you exceeding scope.
+
+The same caveat applies to the lane table below: lanes were drawn from those
+same file lists, so lane boundaries may leak. If your task turns out to touch a
+file another lane owns, stop and flag it rather than editing across the boundary.
+
 **Conventions**
 
 - Branch from the current integration branch (`contexts` unless told otherwise).
@@ -97,10 +113,14 @@ code, and its `priority` field duplicates `ContextClassifier.Profile.specificity
 - Files: new `Data Handling/MusicContext.swift` · `AudioPlayerManager.swift:239`
   · `Context.swift` · `ContextClassifier.swift` · `ContextDetector.swift` ·
   `MapView.swift:92` · `LibraryView.swift` · `ContentView.swift` ·
-  `ContextDetectionTests.swift`
+  `ContextRingView.swift:13` · `ContextDetectionTests.swift`
 - Done when: `AudioPlayerManager` declares no nested type, two types named
   Context no longer coexist, and the existing tests pass with only the rename
   applied.
+
+**Status: done** — branch `lr/01-music-context`, commit `fc564dc`, awaiting
+review and a Mac build. `ContextRingView.swift` was missing from the original
+file list and was found by grep; the entry above is corrected.
 
 ### LR-02 — Own the location objects at app scope
 **Blocker · S · depends: nothing (sequence with LR-01)**
