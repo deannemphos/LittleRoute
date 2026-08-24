@@ -10,7 +10,7 @@
 import SwiftUI
 
 struct ContextRingView: View {
-    var context: AudioPlayerManager.Context
+    var context: MusicContext
     let diameter: CGFloat
     var color: Color
 

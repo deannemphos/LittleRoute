@@ -41,23 +41,23 @@ class ContextDetector: ObservableObject {
     private let weatherProvider: WeatherProviding?
 
     // MARK: - State
-    @Published private(set) var confirmedContext: AudioPlayerManager.Context
+    @Published private(set) var confirmedContext: MusicContext
     @Published private(set) var zones: [ContextClassifier.Zone] = []
-    @Published private(set) var contextScores: [AudioPlayerManager.Context: Double] = [:]
+    @Published private(set) var contextScores: [MusicContext: Double] = [:]
     // Latest known weather bucket, refreshed each poll (heavily cached upstream)
     @Published private(set) var latestWeather: ContextClassifier.Factors.Condition?
     // Runtime debt per context, 0...ContextClassifier.maxDebt. Only contexts
     // with a nonzero balance are present.
-    @Published private(set) var debts: [AudioPlayerManager.Context: Double] = [:]
-    private(set) var candidateContext: AudioPlayerManager.Context?
+    @Published private(set) var debts: [MusicContext: Double] = [:]
+    private(set) var candidateContext: MusicContext?
     private(set) var candidateSince: Date?
-    private(set) var bufferedContext: AudioPlayerManager.Context?
+    private(set) var bufferedContext: MusicContext?
     private(set) var bufferExpiry: Date?
     private var lastDebtTick: Date?
     private var lastTickLocation: CLLocation?
 
     // Fired on the main thread whenever a new context is confirmed
-    var onContextChange: ((AudioPlayerManager.Context) -> Void)?
+    var onContextChange: ((MusicContext) -> Void)?
 
     private weak var locationHandler: LocationHandler?
     private var pollTimer: Timer?
@@ -66,7 +66,7 @@ class ContextDetector: ObservableObject {
     var now: () -> Date = { Date() }
 
     init(locationHandler: LocationHandler,
-         initialContext: AudioPlayerManager.Context = .all,
+         initialContext: MusicContext = .all,
          pollInterval: TimeInterval = 10,
          dwellDuration: TimeInterval = 30,
          searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
@@ -219,7 +219,7 @@ class ContextDetector: ObservableObject {
         }
     }
 
-    func debt(for context: AudioPlayerManager.Context) -> Double {
+    func debt(for context: MusicContext) -> Double {
         debts[context] ?? 0
     }
 
@@ -244,7 +244,7 @@ class ContextDetector: ObservableObject {
         bufferExpiry = nil
     }
 
-    private func isBuffered(_ context: AudioPlayerManager.Context) -> Bool {
+    private func isBuffered(_ context: MusicContext) -> Bool {
         guard let bufferedContext, let bufferExpiry else { return false }
         guard now() < bufferExpiry else {
             clearBuffer()
@@ -262,8 +262,8 @@ class ContextDetector: ObservableObject {
     // the departed context enters the buffer: it can't win again until the
     // buffer window elapses or its debt drains, whichever comes first.
     // Exposed as internal (not private) for unit testing.
-    func process(observation: AudioPlayerManager.Context?,
-                 observationIgnoringDebt: AudioPlayerManager.Context? = nil) {
+    func process(observation: MusicContext?,
+                 observationIgnoringDebt: MusicContext? = nil) {
         let observedContext = observation ?? .traveling
         let debtFreeWinner = observationIgnoringDebt ?? observation
 

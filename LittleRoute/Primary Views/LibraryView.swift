@@ -32,7 +32,7 @@ struct LibraryView: View {
         }
     }
 
-    private let allContexts: [AudioPlayerManager.Context] = [
+    private let allContexts: [MusicContext] = [
         .all, .gym, .restaurant, .store, .park, .home, .work,
         .street, .driving, .beach, .mountain, .city, .town, .water,
         .rainy, .snowy, .traveling
@@ -162,7 +162,7 @@ struct LibraryView: View {
         )
     }
 
-    private func contextChip(song: Song, context: AudioPlayerManager.Context) -> some View {
+    private func contextChip(song: Song, context: MusicContext) -> some View {
         let isTagged = song.locations.contains(context.rawValue)
         return Button {
             toggleTag(song: song, context: context)
@@ -197,7 +197,7 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
-    private func toggleTag(song: Song, context: AudioPlayerManager.Context) {
+    private func toggleTag(song: Song, context: MusicContext) {
         if let index = song.locations.firstIndex(of: context.rawValue) {
             song.locations.remove(at: index)
         } else {

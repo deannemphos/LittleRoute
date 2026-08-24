@@ -208,7 +208,7 @@ struct ContextClassifierTests {
 
 struct ContextDetectorTests {
 
-    private func makeDetector(initial: AudioPlayerManager.Context = .all) -> (ContextDetector, (TimeInterval) -> Void) {
+    private func makeDetector(initial: MusicContext = .all) -> (ContextDetector, (TimeInterval) -> Void) {
         let detector = ContextDetector(
             locationHandler: LocationHandler(),
             initialContext: initial,
@@ -243,7 +243,7 @@ struct ContextDetectorTests {
 
     @Test func switchesAfterDwellWindow() {
         let (detector, advance) = makeDetector(initial: .all)
-        var fired: AudioPlayerManager.Context?
+        var fired: MusicContext?
         detector.onContextChange = { fired = $0 }
 
         detector.process(observation: .store)
@@ -283,7 +283,7 @@ struct ContextDetectorTests {
 
     @Test func nilObservationPromotesToTraveling() {
         let (detector, advance) = makeDetector(initial: .beach)
-        var fired: AudioPlayerManager.Context?
+        var fired: MusicContext?
         detector.onContextChange = { fired = $0 }
 
         detector.process(observation: nil)

@@ -17,7 +17,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     @Published var isShuffled: Bool = false
     @Published var songLength: TimeInterval = 0.0   // total length of the song
     @Published var currentTime: TimeInterval = 0.0  // current playback time
-    @Published var currentContext: Context = .all
+    @Published var currentContext: MusicContext = .all
     @Published var currentSong: Song? = nil // the currently playing song, if any
 
     @Published private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
@@ -235,27 +235,6 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         if let error = copyError { throw error }
     }
 
-    // all contexts the music will account for
-    enum Context: String {
-        case all = "All"
-        case gym = "Gyms"
-        case restaurant = "Restaurants"
-        case store = "Stores"
-        case park = "Parks"
-        case home = "Home"
-        case work = "Work"
-        case street = "Streets"
-        case driving = "Driving"
-        case beach = "Beaches"
-        case mountain = "Mountains"
-        case city = "Cities"
-        case town = "Towns"
-        case water = "Water"
-        case rainy = "Rainy"       // weather override — trumps location-based contexts
-        case snowy = "Snowy"       // weather override — trumps location-based contexts
-        case traveling = "Traveling" // fallback when no recognizable POI is nearby, or speed > 35mph
-    }
-
     // MARK: Audio Playback Functions
     // Play the music if not paused, pause the music if paused. ezpz
     public func musicPlayPause() {
@@ -392,7 +371,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     // Switch to a new context with a short crossfade.
     // Called when the user enters a new area (via ContextDetector).
-    public func switchContext(to newContext: Context, songs: [Song], fadeDuration: TimeInterval = 1.5) {
+    public func switchContext(to newContext: MusicContext, songs: [Song], fadeDuration: TimeInterval = 1.5) {
         guard newContext != currentContext else { return }
 
         currentContext = newContext
@@ -422,7 +401,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     // Reset the queue upon entering a new location/context
-    public func reloadQueue(newContext: Context, shuffle: Bool, songs: [Song]) {
+    public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song]) {
         
         songQueue.removeAll()
         
