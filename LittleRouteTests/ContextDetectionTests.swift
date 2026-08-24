@@ -6,6 +6,7 @@
 import Testing
 import MapKit
 import CoreLocation
+import WeatherKit
 @testable import LittleRoute
 
 struct ContextClassifierTests {
@@ -70,6 +71,120 @@ struct ContextClassifierTests {
         #expect(parkRadius! > restaurantRadius!)
     }
 
+    @Test func specificityRanksUncommonContextsAboveCommonOnes() {
+        let beach = ContextClassifier.profile(for: .beach)?.specificity
+        let gym = ContextClassifier.profile(for: .gym)?.specificity
+        let restaurant = ContextClassifier.profile(for: .restaurant)?.specificity
+
+        #expect(beach! > gym!)
+        #expect(gym! > restaurant!)
+        #expect(restaurant! < 1.0)
+        #expect(beach! > 1.0)
+    }
+
+    @Test func debtDiscountsAnOtherwiseWinningContext() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 10)
+        let store = mapItem(category: .store, metersEast: 40)
+
+        let clean = ContextClassifier.evaluate(places: [restaurant, store], userLocation: user)
+        #expect(clean.context == .restaurant)
+        #expect(clean.contextIgnoringDebt == .restaurant)
+
+        let indebted = ContextClassifier.evaluate(
+            places: [restaurant, store],
+            userLocation: user,
+            debts: [.restaurant: ContextClassifier.maxDebt]
+        )
+        #expect(indebted.context == .store)
+        // The debt-free view still favors the restaurant — that disagreement is
+        // what flags the switch as debt-driven.
+        #expect(indebted.contextIgnoringDebt == .restaurant)
+    }
+
+    @Test func debtAloneCannotForceASwitchWithoutACompetingZone() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 10)
+
+        let evaluation = ContextClassifier.evaluate(
+            places: [restaurant],
+            userLocation: user,
+            debts: [.restaurant: ContextClassifier.maxDebt]
+        )
+
+        // Even fully indebted, the only present context still wins.
+        #expect(evaluation.context == .restaurant)
+        #expect(evaluation.scores[.restaurant, default: 0] > 0)
+    }
+
+    @Test func debtMultiplierIsClampedAndNeverZeroesAContext() {
+        #expect(ContextClassifier.debtMultiplier(for: 0) == 1.0)
+        #expect(ContextClassifier.debtMultiplier(for: ContextClassifier.maxDebt) == 1.0 - ContextClassifier.maxDebt)
+        #expect(ContextClassifier.debtMultiplier(for: 99) == 1.0 - ContextClassifier.maxDebt)
+        #expect(ContextClassifier.debtMultiplier(for: -5) == 1.0)
+        #expect(ContextClassifier.debtMultiplier(for: 99) > 0)
+    }
+
+    // MARK: External factors
+
+    @Test func rainOverridesPOIsAndSpeed() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let beach = mapItem(category: .beach, metersEast: 50)
+        let factors = ContextClassifier.Factors(weather: .rainy, speed: 30) // raining AND highway speed
+
+        let evaluation = ContextClassifier.evaluate(places: [beach], userLocation: user, factors: factors)
+
+        #expect(evaluation.context == .rainy)
+        #expect(evaluation.contextIgnoringDebt == .rainy)
+        #expect(!evaluation.zones.isEmpty) // the map still gets its zones
+    }
+
+    @Test func snowOverridesPOIsAndSpeed() {
+        let factors = ContextClassifier.Factors(weather: .snowy, speed: 30)
+        #expect(ContextClassifier.contextOverride(for: factors) == .snowy)
+    }
+
+    @Test func speedAbove35mphClassifiesAsTraveling() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let beach = mapItem(category: .beach, metersEast: 50)
+        let factors = ContextClassifier.Factors(weather: .clear, speed: 16) // ~36 mph
+
+        let evaluation = ContextClassifier.evaluate(places: [beach], userLocation: user, factors: factors)
+        #expect(evaluation.context == .traveling)
+    }
+
+    @Test func speedBelowThresholdDoesNotOverride() {
+        let walking = ContextClassifier.Factors(weather: .clear, speed: 1.5)
+        let driving33 = ContextClassifier.Factors(weather: .clear, speed: 15) // ~33.5 mph
+        #expect(ContextClassifier.contextOverride(for: walking) == nil)
+        #expect(ContextClassifier.contextOverride(for: driving33) == nil)
+    }
+
+    @Test func unknownFactorsDoNotOverride() {
+        #expect(ContextClassifier.contextOverride(for: ContextClassifier.Factors()) == nil)
+
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let beach = mapItem(category: .beach, metersEast: 50)
+        let evaluation = ContextClassifier.evaluate(
+            places: [beach],
+            userLocation: user,
+            factors: ContextClassifier.Factors(weather: .clear, speed: 1.5)
+        )
+        #expect(evaluation.context == .beach)
+    }
+
+    @Test func weatherKitConditionsBucketCorrectly() {
+        #expect(WeatherKitProvider.bucket(.rain) == .rainy)
+        #expect(WeatherKitProvider.bucket(.thunderstorms) == .rainy)
+        #expect(WeatherKitProvider.bucket(.freezingRain) == .rainy)
+        #expect(WeatherKitProvider.bucket(.snow) == .snowy)
+        #expect(WeatherKitProvider.bucket(.blizzard) == .snowy)
+        #expect(WeatherKitProvider.bucket(.wintryMix) == .snowy)
+        #expect(WeatherKitProvider.bucket(.clear) == .clear)
+        #expect(WeatherKitProvider.bucket(.cloudy) == .clear)
+        #expect(WeatherKitProvider.bucket(.windy) == .clear)
+    }
+
     @Test func classifyIgnoresUnmappablePlaces() {
         let user = CLLocation(latitude: 0, longitude: 0)
         let unmapped = mapItem(category: .police, latitude: 0.0001, longitude: 0.0001) // nearest, but unmapped
@@ -94,7 +209,14 @@ struct ContextClassifierTests {
 struct ContextDetectorTests {
 
     private func makeDetector(initial: AudioPlayerManager.Context = .all) -> (ContextDetector, (TimeInterval) -> Void) {
-        let detector = ContextDetector(locationHandler: LocationHandler(), initialContext: initial, dwellDuration: 30)
+        let detector = ContextDetector(
+            locationHandler: LocationHandler(),
+            initialContext: initial,
+            dwellDuration: 30,
+            debtAccumulationDuration: 480, // pin explicitly so UserDefaults can't leak into tests
+            switchBufferDuration: 180,
+            weatherProvider: nil
+        )
         var currentTime = Date(timeIntervalSince1970: 0)
         detector.now = { currentTime }
         let advance: (TimeInterval) -> Void = { currentTime = currentTime.addingTimeInterval($0) }
@@ -170,5 +292,114 @@ struct ContextDetectorTests {
 
         #expect(detector.confirmedContext == .traveling)
         #expect(fired == .traveling)
+    }
+
+    // MARK: Debt
+
+    @Test func debtAccruesOnlyForConfirmedContextWhileMoving() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        detector.tickDebt(isMoving: true) // primes the tick clock
+        advance(96)
+        detector.tickDebt(isMoving: true) // 96s moving: 0.5 * 96/480 = 0.1
+        #expect(abs(detector.debt(for: .restaurant) - 0.1) < 0.0001)
+        #expect(detector.debt(for: .store) == 0)
+    }
+
+    @Test func debtDoesNotAccrueWhileStationary() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        detector.tickDebt(isMoving: false)
+        advance(600)
+        detector.tickDebt(isMoving: false) // 10 minutes parked at the library
+        #expect(detector.debt(for: .restaurant) == 0)
+    }
+
+    @Test func debtDecaysWhileStationary() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        detector.tickDebt(isMoving: true)
+        advance(192)
+        detector.tickDebt(isMoving: true) // builds 0.2
+        advance(96)
+        detector.tickDebt(isMoving: false) // decays 0.1
+        #expect(abs(detector.debt(for: .restaurant) - 0.1) < 0.0001)
+    }
+
+    @Test func debtIsCappedAtMax() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        detector.tickDebt(isMoving: true)
+        advance(48_000) // way past full accumulation
+        detector.tickDebt(isMoving: true)
+        #expect(detector.debt(for: .restaurant) == ContextClassifier.maxDebt)
+    }
+
+    @Test func debtAccumulationDurationReadsUserDefault() {
+        let key = ContextDetector.debtAccumulationDefaultsKey
+        let original = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+
+        UserDefaults.standard.set(120.0, forKey: key) // spec's field-testing value
+        let detector = ContextDetector(locationHandler: LocationHandler(), weatherProvider: nil)
+        #expect(detector.debtAccumulationDuration == 120)
+
+        UserDefaults.standard.removeObject(forKey: key)
+        let fallback = ContextDetector(locationHandler: LocationHandler(), weatherProvider: nil)
+        #expect(fallback.debtAccumulationDuration == ContextDetector.defaultDebtAccumulationDuration)
+    }
+
+    // MARK: Buffer zone
+
+    @Test func debtDrivenSwitchArmsBufferAgainstFlapping() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        // Debt-driven: without debt the restaurant would still be winning
+        detector.process(observation: .store, observationIgnoringDebt: .restaurant)
+        advance(30)
+        detector.process(observation: .store, observationIgnoringDebt: .restaurant)
+        #expect(detector.confirmedContext == .store)
+        #expect(detector.bufferedContext == .restaurant)
+
+        // The departed context reappears immediately — buffered, no candidacy
+        detector.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        #expect(detector.candidateContext == nil)
+        advance(30)
+        detector.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        #expect(detector.confirmedContext == .store)
+
+        // Once the 180s buffer expires it can compete (and win) again
+        advance(150)
+        detector.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        #expect(detector.candidateContext == .restaurant)
+        advance(30)
+        detector.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        #expect(detector.confirmedContext == .restaurant)
+    }
+
+    @Test func naturalSwitchDoesNotArmBuffer() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        detector.process(observation: .park, observationIgnoringDebt: .park)
+        advance(30)
+        detector.process(observation: .park, observationIgnoringDebt: .park)
+        #expect(detector.confirmedContext == .park)
+        #expect(detector.bufferedContext == nil)
+    }
+
+    @Test func bufferReleasesEarlyOnceDebtDrains() {
+        let (detector, advance) = makeDetector(initial: .restaurant)
+        // Build a small debt balance while traveling
+        detector.tickDebt(isMoving: true)
+        advance(48)
+        detector.tickDebt(isMoving: true) // 0.05 debt
+        // Debt-driven switch away from the restaurant
+        detector.process(observation: .store, observationIgnoringDebt: .restaurant)
+        advance(30)
+        detector.process(observation: .store, observationIgnoringDebt: .restaurant)
+        #expect(detector.bufferedContext == .restaurant)
+
+        // Debt fully drains well before the 180s buffer window is up
+        advance(48)
+        detector.tickDebt(isMoving: false)
+        #expect(detector.debt(for: .restaurant) == 0)
+        #expect(detector.bufferedContext == nil)
     }
 }

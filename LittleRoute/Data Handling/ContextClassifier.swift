@@ -5,10 +5,9 @@ import MapKit
 struct ContextClassifier {
     struct Profile {
         let effectiveRadius: CLLocationDistance
-        // let weight: Double
-        
+
         let specificity: Double // How specific this context is, a higher specificity means it's less common and should be weighted more heavily in the scoring algorithm
-        let debt: Double // how much "debt" this one is compared to other contexts. Accumulate debt the longer a context has been active for so less common contexts can be prioritized occasionally
+        let debt: Double // Baseline "debt" for this context. Runtime debt accumulates on top of this (see ContextDetector.debts) the longer a context has been active while traveling, so less common contexts can be prioritized occasionally
     }
 
     struct Zone: Identifiable {
@@ -20,20 +19,59 @@ struct ContextClassifier {
         let score: Double
     }
 
-    // @TODO: Implement this and integrate it into the scoring algorithm
-    // Outside factors that may affect context; stuff like weather and speed
+    // Outside factors that may affect context beyond POI proximity.
+    // Weather and speed are live; heart rate / running state are still stubs.
     struct Factors {
-        let weather: Int?        // Replace this with Apple's weather API
-        let speed: Int?          // Replace this with some kind of speed estimate 
-        let heartRate: Int?      // Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
-        let isRunning: Bool?     // healthkit should be able to track this
+        // Simplified weather buckets
+        enum Condition {
+            case clear
+            case rainy
+            case snowy
+        }
+
+        var weather: Condition? = nil       // from WeatherProviding (WeatherKit)
+        var speed: CLLocationSpeed? = nil   // m/s, from CoreLocation
+        var heartRate: Int? = nil           // @TODO: Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
+        var isRunning: Bool? = nil          // @TODO: healthkit should be able to track this
+    }
+
+    // Above this speed the user is unambiguously in a vehicle — classify as
+    // traveling no matter what POIs are nearby. 35 mph, expressed in m/s.
+    static let travelingSpeedThreshold: CLLocationSpeed = 35 * 0.44704
+
+    // Hard overrides that trump POI scoring entirely.
+    // Rain/snow beats everything (including speed); high speed beats POIs.
+    static func contextOverride(for factors: Factors) -> AudioPlayerManager.Context? {
+        switch factors.weather {
+        case .rainy: return .rainy
+        case .snowy: return .snowy
+        case .clear, nil: break
+        }
+        if let speed = factors.speed, speed > travelingSpeedThreshold {
+            return .traveling
+        }
+        return nil
     }
 
     struct Evaluation {
         let context: AudioPlayerManager.Context?
-        let factors: [Factors]?
+        // What would have won on proximity × specificity alone. When this differs
+        // from `context`, accumulated debt changed the outcome — ContextDetector
+        // uses that signal to arm the anti-flapping switch buffer.
+        let contextIgnoringDebt: AudioPlayerManager.Context?
+        var factors: [Factors]? = nil
         let scores: [AudioPlayerManager.Context: Double]
         let zones: [Zone]
+    }
+
+    // Debt tuning: a fully indebted context loses up to half of its score —
+    // enough for any other nearby context to overtake it at comparable
+    // proximity, but never enough to zero a context out entirely. Debt alone
+    // can therefore never force a switch; a competing zone must be observed.
+    static let maxDebt: Double = 0.5
+
+    static func debtMultiplier(for debt: Double) -> Double {
+        1.0 - min(max(debt, 0), maxDebt)
     }
 
 
@@ -92,9 +130,18 @@ struct ContextClassifier {
         evaluate(places: places, userLocation: userLocation).context
     }
 
-    static func evaluate(places: [MKMapItem], userLocation: CLLocation?) -> Evaluation {
+    // `debts` carries the runtime debt level (0...maxDebt) per context, managed
+    // by ContextDetector. Scores are proximity × specificity × debt multiplier.
+    // `factors` (weather/speed) can hard-override the POI winner entirely.
+    static func evaluate(places: [MKMapItem],
+                         userLocation: CLLocation?,
+                         debts: [AudioPlayerManager.Context: Double] = [:],
+                         factors: Factors? = nil) -> Evaluation {
+        let override = factors.flatMap { contextOverride(for: $0) }
+
         guard let userLocation else {
-            return Evaluation(context: nil, scores: [:], zones: [])
+            return Evaluation(context: override, contextIgnoringDebt: override,
+                              factors: factors.map { [$0] }, scores: [:], zones: [])
         }
 
         var contributions: [AudioPlayerManager.Context: [Double]] = [:]
@@ -109,7 +156,7 @@ struct ContextClassifier {
 
             let distance = userLocation.distance(from: placeLocation)
             let proximity = max(0, 1 - (distance / profile.effectiveRadius))
-            let score = proximity * profile.weight
+            let score = proximity * profile.specificity
             zones.append(
                 Zone(
                     id: zoneID(for: item, context: context),
@@ -128,20 +175,40 @@ struct ContextClassifier {
         // The strongest POI defines most of a context's score. Additional nearby
         // POIs add limited evidence so dense restaurant/store clusters do not win
         // solely because those categories are more common in MapKit.
-        let scores = contributions.mapValues { values in
+        let rawScores = contributions.mapValues { values in
             let sorted = values.sorted(by: >)
             return sorted.enumerated().reduce(0) { total, entry in
                 total + entry.element * pow(0.25, Double(entry.offset))
             }
         }
-        let winner = scores.max { lhs, rhs in
+
+        // Debt discounts a context that has been active for a while, giving
+        // less common neighbors a fair shake — but only contexts that are
+        // physically present can win, so debt can never switch on its own.
+        let scores = Dictionary(uniqueKeysWithValues: rawScores.map { (context, score) in
+            let debt = (debts[context] ?? 0) + (profile(for: context)?.debt ?? 0)
+            return (context, score * debtMultiplier(for: debt))
+        })
+
+        // Zones and scores are still computed under an override so the map can
+        // keep showing nearby context areas — the override only decides the
+        // winner.
+        return Evaluation(
+            context: override ?? winner(of: scores),
+            contextIgnoringDebt: override ?? winner(of: rawScores),
+            factors: factors.map { [$0] },
+            scores: scores,
+            zones: zones
+        )
+    }
+
+    private static func winner(of scores: [AudioPlayerManager.Context: Double]) -> AudioPlayerManager.Context? {
+        scores.max { lhs, rhs in
             if lhs.value == rhs.value {
                 return lhs.key.rawValue > rhs.key.rawValue
             }
             return lhs.value < rhs.value
         }?.key
-
-        return Evaluation(context: winner, scores: scores, zones: zones)
     }
 
     private static func zoneID(for item: MKMapItem, context: AudioPlayerManager.Context) -> String {

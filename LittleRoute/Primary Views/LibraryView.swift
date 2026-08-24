@@ -34,7 +34,8 @@ struct LibraryView: View {
 
     private let allContexts: [AudioPlayerManager.Context] = [
         .all, .gym, .restaurant, .store, .park, .home, .work,
-        .street, .driving, .beach, .mountain, .city, .town, .water, .traveling
+        .street, .driving, .beach, .mountain, .city, .town, .water,
+        .rainy, .snowy, .traveling
     ]
 
     var body: some View {

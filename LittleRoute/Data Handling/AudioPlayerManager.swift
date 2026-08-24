@@ -251,7 +251,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         case city = "Cities"
         case town = "Towns"
         case water = "Water"
-        case traveling = "Traveling" // fallback when no recognizable POI is nearby
+        case rainy = "Rainy"       // weather override — trumps location-based contexts
+        case snowy = "Snowy"       // weather override — trumps location-based contexts
+        case traveling = "Traveling" // fallback when no recognizable POI is nearby, or speed > 35mph
     }
 
     // MARK: Audio Playback Functions

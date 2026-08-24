@@ -80,6 +80,8 @@ struct MapView: View {
         case .restaurant: return "fork.knife"
         case .store: return "bag.fill"
         case .city: return "building.2.fill"
+        case .rainy: return "cloud.rain.fill"
+        case .snowy: return "snowflake"
         default: return "mappin"
         }
     }
@@ -96,6 +98,8 @@ extension AudioPlayerManager.Context {
         case .restaurant: return .red
         case .store: return .purple
         case .city: return .blue
+        case .rainy: return .indigo
+        case .snowy: return .mint
         default: return .gray
         }
     }
