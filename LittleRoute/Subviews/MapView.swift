@@ -40,6 +40,9 @@ struct MapView: View {
     
     var body: some View {
         Map(position: $position) {
+            // Diffs on Zone.id, so every poll that rediscovers the same places
+            // should reuse these circles and annotations rather than replace
+            // them — see ContextClassifier.zoneID for how that ID stays put.
             ForEach(contextDetector.zones) { zone in
                 let color = zone.context.tintColor
                 let isActive = zone.context == context

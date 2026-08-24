@@ -211,8 +211,37 @@ struct ContextClassifier {
         }?.key
     }
 
+    // MARK: - Zone identity
+
+    // These IDs are what MapView's ForEach diffs on, so they have to describe
+    // the *place* rather than this particular reading of it. Interpolating
+    // full-precision coordinates meant a POI whose coordinate moved by a metre
+    // between searches came back as a brand new zone, and SwiftUI tore down and
+    // rebuilt every circle and annotation instead of leaving them alone.
+    //
+    // MapKit hands out a stable per-place identifier from iOS 18 onward, and the
+    // deployment target is 18.1, so it needs no availability check. It survives
+    // coordinate drift, renames and recategorization, which is exactly what we
+    // want out of identity.
     private static func zoneID(for item: MKMapItem, context: MusicContext) -> String {
+        if let identifier = item.identifier {
+            return "poi-\(identifier.rawValue)"
+        }
+        return coordinateZoneID(for: item, context: context)
+    }
+
+    // Not every map item carries an identifier — locally constructed ones never
+    // do — so fall back to the coordinate, snapped to a four-decimal grid. That
+    // is a cell of ~11m per side, meaning two points sharing a cell are at most
+    // ~16m apart, and it absorbs the small drift a repeated search introduces.
+    // Name and context stay in the key, so two neighbouring places can only
+    // collide if they share a category *and* a name *and* that cell — which is a
+    // duplicated POI record, not two distinct places.
+    private static func coordinateZoneID(for item: MKMapItem, context: MusicContext) -> String {
         let coordinate = item.placemark.coordinate
-        return "\(context.rawValue)-\(coordinate.latitude)-\(coordinate.longitude)-\(item.name ?? "")"
+        let latitude = String(format: "%.4f", coordinate.latitude)
+        let longitude = String(format: "%.4f", coordinate.longitude)
+        // prefixed so a coordinate-derived ID can never collide with a MapKit one
+        return "geo-\(context.rawValue)-\(latitude)-\(longitude)-\(item.name ?? "")"
     }
 }
