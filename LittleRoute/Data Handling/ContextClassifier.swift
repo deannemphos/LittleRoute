@@ -22,6 +22,7 @@ struct ContextClassifier {
     // Outside factors that may affect context beyond POI proximity.
     // Weather and speed are live; heart rate / running state are still stubs.
     struct Factors {
+<<<<<<< HEAD
         // Simplified weather buckets — we only care about conditions that
         // change what music fits, not full meteorology.
         enum Condition {
@@ -52,6 +53,12 @@ struct ContextClassifier {
             return .traveling
         }
         return nil
+=======
+        let weather: Int?        // Replace this with Apple's weather API
+        let speed: Int?          // Replace this with some kind of speed estimate 
+        let heartRate: Int?      // Use Apple's healthkit API (NEED PERMISSIONS CHECK) -- HKHeartbeatSeriesQuery
+        let isRunning: Bool?     // healthkit should be able to track this
+>>>>>>> 17252483f36c95e931cec5f68525238166c84682
     }
 
     struct Evaluation {
