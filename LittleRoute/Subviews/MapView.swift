@@ -10,7 +10,7 @@ import MapKit
 
 struct MapView: View {
     @ObservedObject var contextDetector: ContextDetector
-    var context: AudioPlayerManager.Context
+    var context: MusicContext
 
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     
@@ -41,7 +41,7 @@ struct MapView: View {
     var body: some View {
         Map(position: $position) {
             ForEach(contextDetector.zones) { zone in
-                let color = color(for: zone.context)
+                let color = zone.context.tintColor
                 let isActive = zone.context == context
 
                 MapCircle(center: zone.coordinate, radius: zone.radius)
@@ -49,7 +49,7 @@ struct MapView: View {
                     .stroke(color.opacity(isActive ? 0.95 : 0.55), lineWidth: isActive ? 3 : 1)
 
                 Annotation(zone.name, coordinate: zone.coordinate) {
-                    Image(systemName: icon(for: zone.context))
+                    Image(systemName: zone.context.iconName)
                         .font(.caption.bold())
                         .foregroundStyle(.white)
                         .padding(5)
@@ -66,41 +66,5 @@ struct MapView: View {
             MapScaleView()
         }
         .accessibilityLabel("Nearby music context zones")
-    }
-
-    private func color(for context: AudioPlayerManager.Context) -> Color {
-        context.tintColor
-    }
-
-    private func icon(for context: AudioPlayerManager.Context) -> String {
-        switch context {
-        case .beach: return "water.waves"
-        case .park: return "leaf.fill"
-        case .gym: return "figure.run"
-        case .restaurant: return "fork.knife"
-        case .store: return "bag.fill"
-        case .city: return "building.2.fill"
-        case .rainy: return "cloud.rain.fill"
-        case .snowy: return "snowflake"
-        default: return "mappin"
-        }
-    }
-}
-
-// Shared context accent color, used for map zones and the main view's
-// background tint.
-extension AudioPlayerManager.Context {
-    var tintColor: Color {
-        switch self {
-        case .beach: return .cyan
-        case .park: return .green
-        case .gym: return .orange
-        case .restaurant: return .red
-        case .store: return .purple
-        case .city: return .blue
-        case .rainy: return .indigo
-        case .snowy: return .mint
-        default: return .gray
-        }
     }
 }

@@ -14,7 +14,7 @@ struct ContextClassifier {
         let id: String
         let name: String
         let coordinate: CLLocationCoordinate2D
-        let context: AudioPlayerManager.Context
+        let context: MusicContext
         let radius: CLLocationDistance
         let score: Double
     }
@@ -41,7 +41,7 @@ struct ContextClassifier {
 
     // Hard overrides that trump POI scoring entirely.
     // Rain/snow beats everything (including speed); high speed beats POIs.
-    static func contextOverride(for factors: Factors) -> AudioPlayerManager.Context? {
+    static func contextOverride(for factors: Factors) -> MusicContext? {
         switch factors.weather {
         case .rainy: return .rainy
         case .snowy: return .snowy
@@ -54,13 +54,13 @@ struct ContextClassifier {
     }
 
     struct Evaluation {
-        let context: AudioPlayerManager.Context?
+        let context: MusicContext?
         // What would have won on proximity × specificity alone. When this differs
         // from `context`, accumulated debt changed the outcome — ContextDetector
         // uses that signal to arm the anti-flapping switch buffer.
-        let contextIgnoringDebt: AudioPlayerManager.Context?
+        let contextIgnoringDebt: MusicContext?
         var factors: [Factors]? = nil
-        let scores: [AudioPlayerManager.Context: Double]
+        let scores: [MusicContext: Double]
         let zones: [Zone]
     }
 
@@ -77,7 +77,7 @@ struct ContextClassifier {
 
     // Larger, less common places influence a wider area. Common, compact places
     // need the user to be closer before they outweigh their surroundings.
-    static let profiles: [AudioPlayerManager.Context: Profile] = [
+    static let profiles: [MusicContext: Profile] = [
         .beach: Profile(effectiveRadius: 600, specificity: 1.30, debt: 0.0),
         .gym: Profile(effectiveRadius: 120, specificity: 1.05, debt: 0.0),
         .restaurant: Profile(effectiveRadius: 70, specificity: 0.70, debt: 0.0),
@@ -92,8 +92,8 @@ struct ContextClassifier {
 
     //@TODO: Bring back the old context categories and allow users to customize their own context pools
     //       This is a good start for testing and current usage though so it's fine until launch
-    static let categoryMap: [MKPointOfInterestCategory: AudioPlayerManager.Context] = {
-        var map: [MKPointOfInterestCategory: AudioPlayerManager.Context] = [:]
+    static let categoryMap: [MKPointOfInterestCategory: MusicContext] = {
+        var map: [MKPointOfInterestCategory: MusicContext] = [:]
 
         for category in [MKPointOfInterestCategory.beach, .marina, .surfing, .swimming, .kayaking, .fishing] {
             map[category] = .beach
@@ -117,16 +117,16 @@ struct ContextClassifier {
         return map
     }()
 
-    static func context(for category: MKPointOfInterestCategory?) -> AudioPlayerManager.Context? {
+    static func context(for category: MKPointOfInterestCategory?) -> MusicContext? {
         guard let category else { return nil }
         return categoryMap[category]
     }
 
-    static func profile(for context: AudioPlayerManager.Context) -> Profile? {
+    static func profile(for context: MusicContext) -> Profile? {
         profiles[context]
     }
 
-    static func classify(places: [MKMapItem], userLocation: CLLocation?) -> AudioPlayerManager.Context? {
+    static func classify(places: [MKMapItem], userLocation: CLLocation?) -> MusicContext? {
         evaluate(places: places, userLocation: userLocation).context
     }
 
@@ -135,7 +135,7 @@ struct ContextClassifier {
     // `factors` (weather/speed) can hard-override the POI winner entirely.
     static func evaluate(places: [MKMapItem],
                          userLocation: CLLocation?,
-                         debts: [AudioPlayerManager.Context: Double] = [:],
+                         debts: [MusicContext: Double] = [:],
                          factors: Factors? = nil) -> Evaluation {
         let override = factors.flatMap { contextOverride(for: $0) }
 
@@ -144,7 +144,7 @@ struct ContextClassifier {
                               factors: factors.map { [$0] }, scores: [:], zones: [])
         }
 
-        var contributions: [AudioPlayerManager.Context: [Double]] = [:]
+        var contributions: [MusicContext: [Double]] = [:]
         var zones: [Zone] = []
 
         for item in places {
@@ -202,7 +202,7 @@ struct ContextClassifier {
         )
     }
 
-    private static func winner(of scores: [AudioPlayerManager.Context: Double]) -> AudioPlayerManager.Context? {
+    private static func winner(of scores: [MusicContext: Double]) -> MusicContext? {
         scores.max { lhs, rhs in
             if lhs.value == rhs.value {
                 return lhs.key.rawValue > rhs.key.rawValue
@@ -211,7 +211,7 @@ struct ContextClassifier {
         }?.key
     }
 
-    private static func zoneID(for item: MKMapItem, context: AudioPlayerManager.Context) -> String {
+    private static func zoneID(for item: MKMapItem, context: MusicContext) -> String {
         let coordinate = item.placemark.coordinate
         return "\(context.rawValue)-\(coordinate.latitude)-\(coordinate.longitude)-\(item.name ?? "")"
     }
