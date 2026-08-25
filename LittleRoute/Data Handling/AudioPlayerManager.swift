@@ -25,12 +25,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var audioPlayer: AVAudioPlayer?
     private var currentIndex: Int = 0 // index of the current song in the queue
     private var playbackTimer: Timer?
-    
+    private var ticksSinceNowPlayingSync = 0 // see startPlaybackTimer
+    private var wasPlayingBeforeInterruption = false // see handleInterruption
+
+    // 0.5s per playback tick, so the lock screen's elapsed time is reconciled every 5 seconds
+    private static let nowPlayingSyncTicks = 10
+
     static let shared = AudioPlayerManager()
 
     private override init() {
         super.init()
         configureAudioSession()
+        observeAudioSessionEvents()
         setupRemoteCommands()
     }
 
@@ -43,6 +49,131 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         } catch {
             print("Failed to configure audio session: \(error)")
         }
+    }
+
+    // MARK: Audio Session Interruptions & Route Changes
+    // Phone calls, Siri, and other apps grabbing the session all arrive as interruption
+    // notifications; unplugging headphones arrives as a route change. In both cases iOS
+    // has already silenced us, so with nobody listening isPaused keeps insisting we're
+    // playing and the UI shows a pause button for silence.
+    //
+    // We deliberately never remove these observers. This class is a singleton reached
+    // through .shared, so it lives as long as the process and deinit is unreachable —
+    // "removing" them would only mean going deaf to interruptions for the rest of the
+    // app's life. (NotificationCenter has held zeroing weak references to selector-based
+    // observers since iOS 9, so there is nothing to dangle either way.)
+    private func observeAudioSessionEvents() {
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+
+        center.addObserver(self,
+                           selector: #selector(handleInterruption(_:)),
+                           name: AVAudioSession.interruptionNotification,
+                           object: session)
+        center.addObserver(self,
+                           selector: #selector(handleRouteChange(_:)),
+                           name: AVAudioSession.routeChangeNotification,
+                           object: session)
+    }
+
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let rawType = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+
+        // Unpack everything we need up front so only plain values cross onto the main
+        // queue below, rather than the notification's untyped userInfo dictionary.
+        let shouldResume: Bool
+        if let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt {
+            shouldResume = AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
+        } else {
+            shouldResume = false
+        }
+
+        // These land on whatever thread the audio session feels like using, and
+        // everything below touches @Published state and a run-loop Timer.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            switch type {
+            case .began:
+                // Ask our own state, not the player's: by the time .began is delivered
+                // iOS may already have paused it, and isPlaying would then be false —
+                // which would make us decide we were never playing and never resume.
+                // isPaused reflects what the user actually asked for.
+                self.wasPlayingBeforeInterruption = !self.isPaused && self.audioPlayer != nil
+                self.pauseForSystemEvent(reason: "interrupted")
+
+            case .ended:
+                // Only pick up where we left off if we were genuinely playing when we
+                // got cut off, otherwise a call would start music the user had paused.
+                guard self.wasPlayingBeforeInterruption else { return }
+                self.wasPlayingBeforeInterruption = false
+
+                guard shouldResume else { return }
+                self.resumeAfterInterruption()
+
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    @objc private func handleRouteChange(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
+
+        // .oldDeviceUnavailable is headphones being yanked or a Bluetooth device walking
+        // away. iOS falls back to the built-in speaker, and it's the one route change
+        // where carrying on playing would be actively rude. Every other reason — a new
+        // device appearing, a category change — we let play through untouched.
+        guard reason == .oldDeviceUnavailable else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.pauseForSystemEvent(reason: "audio route went away")
+        }
+    }
+
+    // Shared by both paths above: by the time either fires the system has already
+    // silenced us, so the job here is purely to stop lying about it.
+    private func pauseForSystemEvent(reason: String) {
+        // There may be no player at all — reloadQueue tears it down when a context
+        // leaves nothing to play, so the song on screen a moment ago can be gone.
+        // Nothing to pause in that case, but isPaused still has to say so.
+        audioPlayer?.pause()
+        isPaused = true
+        stopPlaybackTimer()
+        updateNowPlayingInfo()
+        print("Playback paused: \(reason)")
+    }
+
+    private func resumeAfterInterruption() {
+        guard let player = audioPlayer else {
+            // The queue was rebuilt out from under us while the call was going on and
+            // there's nothing loaded any more. Stay paused rather than pretend.
+            isPaused = true
+            updateNowPlayingInfo()
+            print("Interruption ended, but there is no loaded song to resume")
+            return
+        }
+
+        // Our session was deactivated for the duration of the interruption, so it has
+        // to be reactivated before the player will make any sound again.
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("Failed to reactivate audio session after interruption: \(error)")
+            isPaused = true
+            updateNowPlayingInfo()
+            return
+        }
+
+        player.play()
+        isPaused = false
+        startPlaybackTimer()
+        updateNowPlayingInfo()
+        print("Interruption ended, resuming playback")
     }
 
     // Lock screen / Control Center playback controls
@@ -456,11 +587,27 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Timer management for playback progress
     private func startPlaybackTimer() {
         stopPlaybackTimer()
+        // every caller of this has just pushed now-playing info itself, so start the
+        // reconciliation interval fresh rather than firing again on the next tick
+        ticksSinceNowPlayingSync = 0
         playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self = self, let player = self.audioPlayer else { return }
             self.currentTime = player.currentTime
             if !player.isPlaying {
                 self.stopPlaybackTimer()
+                return
+            }
+
+            // The lock screen works out elapsed time from the last value we handed it
+            // plus the playback rate, so left alone the Control Center scrubber slowly
+            // drifts away from where the song actually is. Pushing on every tick would
+            // fix that, but it means handing the whole dictionary to the media server
+            // twice a second — far more chatter than a scrubber is worth. Reconciling
+            // every few seconds is close enough that nobody can see the difference.
+            self.ticksSinceNowPlayingSync += 1
+            if self.ticksSinceNowPlayingSync >= Self.nowPlayingSyncTicks {
+                self.ticksSinceNowPlayingSync = 0
+                self.updateNowPlayingInfo()
             }
         }
     }
