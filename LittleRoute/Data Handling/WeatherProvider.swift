@@ -101,6 +101,15 @@ final class WeatherKitProvider: WeatherProviding {
     // start(), refreshNow() and the detector's deinit before it type-checked. That
     // is a much larger change than the race needs, and the race is closed either
     // way. If the cascade is ever paid for, this is the file it starts in.
+    //
+    // One warning to expect here under SWIFT_STRICT_CONCURRENCY = targeted, and it
+    // is the same one LR-25 left standing in AudioPlayerManager and ContextDetector:
+    // Task {} takes a @Sendable closure, WeatherKitProvider is not Sendable, so
+    // capturing self in it is reported. The capture predates this task — the fetch
+    // was always inside a Task — and moving the guards in only widened what the
+    // closure covers. It is left for the same reason the others are: the capture is
+    // safe, and the two ways to silence it (Sendable conformance, or the @MainActor
+    // cascade argued against above) both cost more than the warning does.
     func currentCondition(at location: CLLocation,
                           completion: @escaping (ContextClassifier.Factors.Condition?) -> Void) {
         Task { @MainActor in
