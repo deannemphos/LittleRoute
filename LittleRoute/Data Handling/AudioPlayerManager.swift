@@ -515,10 +515,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     //
     // First one wins on a collision, which is the .first the per-name fetch used to take.
     // As of LR-16 that branch should be unreachable: songName carries a unique constraint,
-    // and the V4 → V5 stage collapsed the duplicate rows that predate it. The
-    // uniquingKeysWith stays anyway — it costs one closure, and a Dictionary(_:_:) without
-    // it traps at runtime on a duplicate key. Trading a crash for an arbitrary-but-correct
-    // pick is not a good deal on a guarantee this machine has never been able to run once.
+    // and the V4 → V5 stage collapsed the duplicate rows that predate it. The closure stays
+    // anyway. Dropping it means Dictionary(uniqueKeysWithValues:), which does not tolerate
+    // a duplicate key — it traps — so removing it would trade an arbitrary-but-harmless
+    // pick for a crash, on the strength of a guarantee no one here has been able to run
+    // even once.
     private func existingSongsByName(in modelContext: ModelContext) -> [String: Song] {
         let songs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
         return Dictionary(songs.map { ($0.songName, $0) }, uniquingKeysWith: { existing, _ in existing })

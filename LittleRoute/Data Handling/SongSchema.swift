@@ -255,10 +255,14 @@ enum SongSchemaV4: VersionedSchema {
 // hold two rows claiming it. This is the version where the store agrees with
 // the app.
 //
-// Unlike V3 → V4 this is a genuine shape change, so the ⚠ recorded on V4 does
-// not carry over: a constraint is part of the model description SwiftData
-// matches a store against, not just a different set of strings inside an
-// unchanged column, so there is something here for version detection to see.
+// Unlike V3 → V4 this is a genuine shape change, so the ⚠ recorded on V4 should
+// not carry over. That version's worry is that two descriptions listing
+// identical columns may be indistinguishable to SwiftData, leaving it unable to
+// tell which one a store is already at; a uniqueness constraint is part of the
+// description itself rather than a different set of strings inside an unchanged
+// column, so there is something here for the comparison to catch. "Should" and
+// not "does" — that is reasoning about SwiftData's behaviour, not a run of it,
+// and it is one more thing for a Mac to confirm.
 //
 // What it buys in exchange is a migration that can *fail*. A unique constraint
 // cannot be applied to a column that already holds duplicates, and duplicates
