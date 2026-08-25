@@ -157,15 +157,12 @@ struct LittleRouteApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                // Both types are still ObservableObject, so this is
-                // .environmentObject rather than .environment — the
-                // single-argument .environment(_:) needs Observable
-                // conformance, which the @Observable macro provides and
-                // ObservableObject does not.
-                // @TODO: collapse these two into .environment(...) as part of
-                // the @Observable migration (LR-19).
-                .environmentObject(locationHandler)
-                .environmentObject(contextDetector)
+                // Both types carry the @Observable macro now, which is the
+                // Observable conformance the single-argument .environment(_:)
+                // wants — so these are no longer .environmentObject. ContentView
+                // reads them back with @Environment(Type.self).
+                .environment(locationHandler)
+                .environment(contextDetector)
                 // @TODO: nothing reads this yet, and that's the unfinished
                 // half of LR-10 — a degraded launch currently looks exactly
                 // like a first launch with an empty library, which is the
