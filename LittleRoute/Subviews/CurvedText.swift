@@ -14,6 +14,14 @@ struct CurvedText: View {
     var fontSize: CGFloat = 18.0
     var color: Color = .white
 
+    // What VoiceOver should say instead of the letters. The *collapsing* below is
+    // unconditional because the letter-per-Text split is this view's own doing —
+    // no caller should have to remember to undo it. The wording, though, is
+    // caller knowledge: only the screen placing the arc knows whether it's a
+    // title or an artist, so that part comes in as a parameter. Defaults to the
+    // raw string, which is already correct, just undifferentiated.
+    var spokenLabel: String? = nil
+
     // Approximate angular width of one character at this radius (radians)
     private var anglePerChar: Double {
         Double(fontSize * 0.62 / radius)
@@ -36,5 +44,10 @@ struct CurvedText: View {
             }
         }
         .frame(width: radius * 2, height: radius * 2)
+        // one Text per character means VoiceOver otherwise spells the song out
+        // letter by letter. Collapse the whole arc into a single element and
+        // speak the phrase instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spokenLabel ?? text)
     }
 }

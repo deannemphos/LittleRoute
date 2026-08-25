@@ -37,5 +37,8 @@ struct ContextRingView: View {
                 }
             }
             .allowsHitTesting(false)
+            // purely ambient: the context it's tinted for is spoken by the label
+            // right underneath it, so this would just be a stop with nothing to say
+            .accessibilityHidden(true)
     }
 }

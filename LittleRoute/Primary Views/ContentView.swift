@@ -65,6 +65,7 @@ struct ContentView: View {
                     .shadow(color: theme == .y2k ? .white.opacity(0.9) : .clear, radius: 0, y: 1)
                     .shadow(color: theme.titleGlow, radius: 6, y: 3)
                     .padding(.top, 8)
+                    .accessibilityAddTraits(.isHeader)
                 
                 // Spinny circle tinted to the active context
                 ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
@@ -74,6 +75,9 @@ struct ContentView: View {
                     .foregroundStyle(theme.secondaryText)
                     .shadow(color: theme.titleGlow, radius: 2, y: 1)
                     .padding(.top, 2)
+                    // the y2k sparkles are read out as "white four pointed star" twice,
+                    // and a bare "Gyms" doesn't say what it is. Say both.
+                    .accessibilityLabel("Current context, \(audioManager.currentContext.rawValue)")
 
                 Spacer()
 
@@ -93,18 +97,22 @@ struct ContentView: View {
                         .overlay(Circle().strokeBorder(theme.rim, lineWidth: theme.rimWidth))
                         .shadow(color: theme.shadowColor, radius: 8)
 
-                    // Curved song title (outer arc) and artist (inner arc)
+                    // Curved song title (outer arc) and artist (inner arc).
+                    // The two arcs are visually distinguished by radius alone, which
+                    // tells a VoiceOver user nothing — hence the spoken prefixes.
                     CurvedText(
                         text: audioManager.currentSong?.title ?? "No song playing",
                         radius: albumDiameter / 2 + 18,
                         fontSize: 14,
-                        color: theme.primaryText
+                        color: theme.primaryText,
+                        spokenLabel: "Now playing, \(audioManager.currentSong?.title ?? "no song")"
                     )
                     CurvedText(
                         text: audioManager.currentSong?.artist ?? "Unknown Artist",
                         radius: albumDiameter / 2 + 8,
                         fontSize: 12,
-                        color: theme.secondaryText
+                        color: theme.secondaryText,
+                        spokenLabel: "Artist, \(audioManager.currentSong?.artist ?? "unknown")"
                     )
                 }
                 .padding(.top, 30) // room for the curved text arcs
@@ -115,6 +123,8 @@ struct ContentView: View {
                     .background(Capsule().fill(theme == .y2k ? Color.white.opacity(0.5) : Color(.systemGray5)))
                     .frame(width: albumDiameter * 0.8)
                     .padding(.top, 20)
+                    // otherwise it announces a bare percentage with no idea what of
+                    .accessibilityLabel("Playback progress")
 
                 // Playback controls: back, play/pause, skip
                 HStack(spacing: 28) {
@@ -124,6 +134,7 @@ struct ContentView: View {
                         Image(systemName: "backward.fill")
                     }
                     .buttonStyle(ThemedRoundButtonStyle(theme: theme, size: 60, tint: Y2K.purple))
+                    .accessibilityLabel("Previous song")
 
                     Button {
                         audioManager.musicPlayPause()
@@ -131,6 +142,9 @@ struct ContentView: View {
                         Image(systemName: audioManager.isPaused ? "play.fill" : "pause.fill")
                     }
                     .buttonStyle(ThemedRoundButtonStyle(theme: theme, size: 80, tint: Y2K.pink))
+                    // one button, two jobs — the label has to track the glyph or it
+                    // will offer to play something that's already playing
+                    .accessibilityLabel(audioManager.isPaused ? "Play" : "Pause")
 
                     Button {
                         audioManager.skip()
@@ -138,6 +152,7 @@ struct ContentView: View {
                         Image(systemName: "forward.fill")
                     }
                     .buttonStyle(ThemedRoundButtonStyle(theme: theme, size: 60, tint: Y2K.purple))
+                    .accessibilityLabel("Next song")
                 }
                 .padding(.top, 16)
 
@@ -149,6 +164,9 @@ struct ContentView: View {
                         Label("Shuffle", systemImage: "shuffle")
                     }
                     .buttonStyle(ThemedPillButtonStyle(theme: theme, tint: Y2K.cyan, isActive: audioManager.isShuffled))
+                    // the Label already names it; what's missing is that it's a toggle
+                    // whose on-state is signalled purely by fill colour
+                    .accessibilityValue(audioManager.isShuffled ? "On" : "Off")
 
                     Button {
                         contextDetector.refreshNow()
@@ -156,6 +174,7 @@ struct ContentView: View {
                         Label("Update Context", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(ThemedPillButtonStyle(theme: theme, tint: Y2K.lime))
+                    .accessibilityHint("Rechecks your surroundings and picks music to match.")
                 }
                 .padding(.top, 18)
 
@@ -177,6 +196,7 @@ struct ContentView: View {
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
+                    .accessibilityLabel("Music library")
                     // Quick-import MP3s from the Files app
                     Button {
                         showFileImporter = true
@@ -186,6 +206,8 @@ struct ContentView: View {
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
+                    .accessibilityLabel("Import songs")
+                    .accessibilityHint("Choose MP3s from the Files app.")
                     Spacer()
                     Button {
                         themeRaw = theme.next.rawValue
@@ -195,6 +217,11 @@ struct ContentView: View {
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
+                    // which theme is on is otherwise a purely visual fact, and the
+                    // button cycles rather than opening a picker — say where it lands
+                    .accessibilityLabel("Change theme")
+                    .accessibilityValue(theme.rawValue)
+                    .accessibilityHint("Switches to the \(theme.next.rawValue) theme.")
                 }
                 Spacer()
             }
