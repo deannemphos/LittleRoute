@@ -40,9 +40,15 @@ struct LittleRouteApp: App {
     init() {
         // The detector needs the handler, so they're built together here and
         // seeded into @State rather than declared with inline defaults.
+        //
+        // The weather provider is spelled out because it no longer defaults to
+        // WeatherKitProvider() — a default argument that opens a network client
+        // is a live dependency hiding in a signature. This is the one place a
+        // real one gets built; tests pass nil.
         let handler = LocationHandler()
         _locationHandler = State(initialValue: handler)
-        _contextDetector = State(initialValue: ContextDetector(locationHandler: handler))
+        _contextDetector = State(initialValue: ContextDetector(poiProvider: handler,
+                                                               weatherProvider: WeatherKitProvider()))
     }
 
     var body: some Scene {

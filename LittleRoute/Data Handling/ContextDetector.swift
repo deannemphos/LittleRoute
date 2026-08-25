@@ -59,21 +59,28 @@ class ContextDetector: ObservableObject {
     // Fired on the main thread whenever a new context is confirmed
     var onContextChange: ((MusicContext) -> Void)?
 
-    private weak var locationHandler: LocationHandler?
+    // Weak because the app scope owns the provider and we only borrow it.
+    // POIProviding is AnyObject-bound precisely so this can stay weak — a
+    // non-class-bound existential has no reference for `weak` to zero out.
+    private weak var poiProvider: (any POIProviding)?
     private var pollTimer: Timer?
 
     // Injectable clock for testability
     var now: () -> Date = { Date() }
 
-    init(locationHandler: LocationHandler,
+    // weatherProvider has no default on purpose: it used to default to
+    // WeatherKitProvider(), which meant every detector — every test detector
+    // included — silently built a live WeatherKit client. Pass nil to run
+    // without weather overrides; the app passes the real one.
+    init(poiProvider: any POIProviding,
          initialContext: MusicContext = .all,
          pollInterval: TimeInterval = 10,
          dwellDuration: TimeInterval = 30,
          searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
          debtAccumulationDuration: TimeInterval? = nil,
          switchBufferDuration: TimeInterval = 180,
-         weatherProvider: WeatherProviding? = WeatherKitProvider()) {
-        self.locationHandler = locationHandler
+         weatherProvider: WeatherProviding?) {
+        self.poiProvider = poiProvider
         self.confirmedContext = initialContext
         self.pollInterval = pollInterval
         self.dwellDuration = dwellDuration
@@ -107,10 +114,10 @@ class ContextDetector: ObservableObject {
     // Force an immediate re-detection, bypassing the dwell window.
     // Used by the "update context" button in the UI.
     public func refreshNow() {
-        guard let locationHandler = locationHandler,
-              locationHandler.currentLocation != nil else { return }
+        guard let poiProvider = poiProvider,
+              poiProvider.currentLocation != nil else { return }
 
-        locationHandler.getPointsOfInterest(
+        poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
         ) { [weak self] result in
@@ -118,7 +125,7 @@ class ContextDetector: ObservableObject {
             DispatchQueue.main.async {
                 let evaluation = ContextClassifier.evaluate(
                     places: places,
-                    userLocation: locationHandler.currentLocation,
+                    userLocation: poiProvider.currentLocation,
                     debts: self.debts,
                     factors: self.currentFactors()
                 )
@@ -138,8 +145,8 @@ class ContextDetector: ObservableObject {
 
     // MARK: - Detection
     private func poll() {
-        guard let locationHandler = locationHandler,
-              let location = locationHandler.currentLocation else { return }
+        guard let poiProvider = poiProvider,
+              let location = poiProvider.currentLocation else { return }
 
         let speed = currentSpeed()
 
@@ -154,7 +161,7 @@ class ContextDetector: ObservableObject {
             }
         }
 
-        locationHandler.getPointsOfInterest(
+        poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
         ) { [weak self] result in
@@ -166,7 +173,7 @@ class ContextDetector: ObservableObject {
                     self.tickDebt(isMoving: (speed ?? 0) >= self.movementSpeedThreshold)
                     let evaluation = ContextClassifier.evaluate(
                         places: places,
-                        userLocation: locationHandler.currentLocation,
+                        userLocation: poiProvider.currentLocation,
                         debts: self.debts,
                         factors: factors
                     )
@@ -227,7 +234,7 @@ class ContextDetector: ObservableObject {
     // it's unavailable (CLLocation reports -1), falls back to displacement
     // between polls. nil when speed can't be determined at all.
     private func currentSpeed() -> CLLocationSpeed? {
-        guard let location = locationHandler?.currentLocation else { return nil }
+        guard let location = poiProvider?.currentLocation else { return nil }
         defer { lastTickLocation = location }
 
         if location.speed >= 0 {
