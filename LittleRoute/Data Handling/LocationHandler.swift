@@ -200,6 +200,14 @@ class LocationHandler: NSObject, CLLocationManagerDelegate, POIProviding {
         }
 
         let search = MKLocalSearch(request: request)
+        // Known strict-concurrency diagnostic, deliberately left: MapKit hands this
+        // block back on whatever queue finished the search, so `completion` — an
+        // ordinary escaping closure, not a @Sendable one — gets captured across a
+        // boundary the compiler is entitled to object to. Annotating the parameter
+        // @Sendable would only move the complaint next door, onto ContextDetector's
+        // [weak self] closures at both call sites, which are non-Sendable for the
+        // reasons set out there. The queue this lands on is documented on
+        // POIProviding precisely so callers know to hop, and both of them do.
         search.start { (response: MKLocalSearch.Response?, error: Error?) in
             if let error = error {
                 completion(.failure(error))
@@ -212,6 +220,21 @@ class LocationHandler: NSObject, CLLocationManagerDelegate, POIProviding {
     }
 
     // MARK: - CLLocationManagerDelegate
+    //
+    // Everything in this section writes observable state without hopping, and is
+    // right to. CLLocationManager delivers to the run loop of the thread it was
+    // created on; this one is created in init(), which runs from LittleRouteApp's
+    // initialiser on the main thread, so every callback below is a main-thread
+    // callback. That single fact is what the detector's whole main-thread contract
+    // is anchored to — didUpdateLocations calls straight into ContextDetector,
+    // which writes observable state of its own and never hops either.
+    //
+    // Which makes it worth saying where it could break: constructing a
+    // LocationHandler off the main thread would silently move every delegate
+    // callback with it, and nothing in the type would notice. Nothing does that
+    // today — the app builds exactly one, in App.init — and a test that built one
+    // on a background queue would be the first.
+    //
     // checks if the user disabled location permissions, and drives the second half
     // of the two-step authorization dance (when-in-use -> always). this fires once
     // on delegate assignment with whatever we already had, so an existing install

@@ -19,6 +19,63 @@ import _SwiftData_SwiftUI
 // the AVAudioPlayerDelegate callback, the AVAudioSession notification selectors, and
 // the MPRemoteCommandCenter blocks all arrive on a thread of the system's choosing —
 // so each of those hops onto main itself before touching anything here.
+//
+// MARK: Strict concurrency, and why the obvious annotation is missing
+//
+// This file holds most of the hops in the app and is the obvious candidate for
+// @MainActor. It deliberately does not carry it. Under targeted checking every
+// DispatchQueue.main.async below captures a self that is not Sendable inside a
+// @Sendable closure, and every one of them is reported. Those reports are all the
+// same report, and it is a report about an annotation that is missing rather than
+// about the hops, which are correct as written.
+//
+// What the annotation would actually cost, in the order it bites:
+//
+//   1. It does not silence the hops. It inverts them. A DispatchQueue.main.async
+//      block is a nonisolated closure no matter which actor the enclosing type
+//      belongs to, so `self.skip()` inside one stops being a non-Sendable capture
+//      and starts being a call to a main-actor method from a nonisolated context —
+//      an error where there was a warning. Each of the eight bodies would need
+//      MainActor.assumeIsolated around it. That is the right spelling, and we have
+//      genuinely just hopped so it would hold, but it is eight more places to get
+//      right with nothing to check the work.
+//
+//   2. The six doors from outside Swift would have to be marked nonisolated and
+//      keep their hops regardless. Actor isolation is not enforced across the ObjC
+//      runtime: audioPlayerDidFinishPlaying, the two #selector handlers, and the
+//      three MPRemoteCommandCenter blocks are called by AVFoundation,
+//      NotificationCenter and MediaPlayer on threads of their own choosing, and
+//      @MainActor would only make the compiler *believe* they arrive on main. The
+//      hop is the guarantee; the annotation is a claim about it. Deleting a hop
+//      because "the class is @MainActor now" is the one edit here that converts a
+//      warning into a real crash — and it is precisely the edit the annotation
+//      invites, which is the reason this paragraph is longer than the others.
+//
+//   3. coordinatedCopy would need a nonisolated of its own. importSongs runs it
+//      inside a Task.detached, and a main-actor static is not callable from there.
+//
+//   4. `shared` becomes main-actor isolated, and both ContentView and LibraryView
+//      read it from a stored-property initialiser — `private let audioManager =
+//      AudioPlayerManager.shared` — which is not a main-actor context unless the
+//      View conformance makes it one. Whether it does is the part that cannot be
+//      settled by reading: SwiftUI declares View as @MainActor @preconcurrency, so
+//      the isolation may already be inferred onto both structs and the question may
+//      be moot; or it may want @MainActor spelled out on them; or nonisolated(unsafe)
+//      on `shared`. Three plausible answers, and the only thing that can pick
+//      between them is a compiler.
+//
+// So: no annotation, the hops stay exactly as they are, and the warnings stand with
+// this note attached to them. A warning nobody wrote down is a warning the next
+// person investigates from scratch. This one has been investigated, and the finding
+// is that silencing it blind costs more than carrying it.
+//
+// One likely diagnostic in this file is not about the hops at all. `shared` is
+// static storage of a non-Sendable type, which complete mode certainly objects to
+// and targeted mode may. If it does, the fix is one word — `nonisolated(unsafe)
+// static let shared` — and it is an honest word here rather than a silencing one:
+// the reference itself is immutable, and what it points at is protected by the
+// main-thread convention at the top of this comment rather than by anything the
+// compiler is in a position to see.
 @Observable
 class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
@@ -911,6 +968,13 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     // write below: scheduled from a background thread it would land on a run loop nobody
     // is running, and the progress bar would simply stop moving. That was reachable until
     // the remote commands started hopping — a skip from the lock screen froze the scrubber.
+    //
+    // A second known strict-concurrency site, and one the header's list of hops doesn't
+    // cover: Foundation types the block below as @Sendable, so capturing self in it is
+    // reported for the same non-Sendable reason the hops are. It is safe for a stronger
+    // reason than they are, in fact — the run loop this timer is attached to is the main
+    // one, so the block cannot execute anywhere else — but that is a fact about the
+    // scheduling thread, and the closure's type has no way to carry it.
     private func startPlaybackTimer() {
         stopPlaybackTimer()
         // every caller of this has just pushed now-playing info itself, so start the
