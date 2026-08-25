@@ -25,23 +25,58 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     private var lastAcceptedLocation: CLLocation?
     private var lastAcceptedTime: Date?
     
+    // iOS shows the "keep using in the background?" upgrade prompt exactly once per
+    // install, so this stops us re-asking every time the delegate fires. it does not
+    // need to persist across launches -- a repeat call is a no-op at the OS level,
+    // this just keeps us from spamming it within a session.
+    private var hasRequestedAlwaysUpgrade = false
+
     // Init with passthrough of maximum possible accuracy to differentiate between close buildings
     // (hopefully)
     override init() {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
+
+        // the entire premise of this app is music that changes as you move, which
+        // does not survive the screen going off: CoreLocation stops delivering the
+        // moment we background, while the audio session happily keeps playing. this
+        // is what keeps updates coming.
+        // NB: this line *traps* if UIBackgroundModes in Info.plist is missing the
+        //     `location` value -- it's a hard crash, not a polite failure, so the
+        //     plist entry and this line have to move together.
+        locationManager.allowsBackgroundLocationUpdates = true
+
+        // and put the blue indicator in the status bar while we do it. we are
+        // following you down the street; the least we can do is admit it.
+        locationManager.showsBackgroundLocationIndicator = true
     }
     
     // MARK: - Public Methods
     
     // Request authorization to use location services  
     //  might move this somewhere else, gotta see how it plays out bc I don't have my mac with me
-    // @ TODO: test on simulator and enable the thingy for permissions in the plist
+    // this is deliberately still the *when in use* ask and nothing more. asking for
+    // always straight out of a cold start does not work -- iOS quietly drops an
+    // always-request made from .notDetermined, and we'd burn our one prompt for
+    // nothing. the upgrade happens in locationManagerDidChangeAuthorization once
+    // when-in-use is actually on the books.
+    // @TODO: test the two-step prompt on a real device, the simulator fakes it
     public func requestLocationAuthorization() {
         locationManager.requestWhenInUseAuthorization()
     }
     
+    // Step two: upgrade when-in-use to always, so location keeps arriving once the
+    // screen locks. only ever called from the delegate after when-in-use is granted.
+    // we get one shot at this prompt for the lifetime of the install, hence the flag
+    // -- and if the user says no we just carry on with when-in-use, which still gets
+    // us background updates while audio is playing, just more fragile ones.
+    private func requestAlwaysUpgradeIfNeeded() {
+        guard !hasRequestedAlwaysUpgrade else { return }
+        hasRequestedAlwaysUpgrade = true
+        locationManager.requestAlwaysAuthorization()
+    }
+
     /// Start updating location
     public func startLocationUpdates() {
         locationManager.startUpdatingLocation()
@@ -94,15 +129,23 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     }
 
     // MARK: - CLLocationManagerDelegate
-    // just checks if the user disabled location permissions
-    // @TODO: 
+    // checks if the user disabled location permissions, and drives the second half
+    // of the two-step authorization dance (when-in-use -> always). this fires once
+    // on delegate assignment with whatever we already had, so an existing install
+    // that only granted when-in-use gets offered the upgrade on next launch.
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
 
         switch manager.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways:
+        case .authorizedWhenInUse:
             locationManager.startUpdatingLocation()
-            print("location auth granted successfully")
+            print("location auth granted successfully (when in use)")
+            // now, and only now, is the always-prompt worth spending -- iOS will
+            // actually show it once when-in-use is already granted.
+            requestAlwaysUpgradeIfNeeded()
+        case .authorizedAlways:
+            locationManager.startUpdatingLocation()
+            print("location auth granted successfully (always)")
         case .denied, .restricted:
             // @TODO: create screen that requests user to grant authorization to continue using the app
             print("**ERROR: location auth failed/not granted!")
