@@ -27,14 +27,19 @@ struct LibraryView: View {
     // as the user turns their text size up.
     @ScaledMetric(relativeTo: .caption) private var chipMinWidth: CGFloat = 92.0
 
-    // Songs whose mp3 lives in the imported music directory
+    // Songs whose mp3 lives in the imported music directory.
+    //
+    // This used to ask the filesystem — a synchronous fileExists per song, on
+    // the main thread, re-run every time the List below re-evaluated. The answer
+    // is recorded on the model at import time now, so this is a filter over an
+    // array that is already in memory.
+    //
+    // Still a filter over the full @Query rather than a predicated one, because
+    // toggleTag and deleteSong hand `songs` to reloadQueue and that genuinely
+    // wants the whole library — narrowing the query would quietly drop every
+    // bundled song out of the playback queue.
     private var importedSongs: [Song] {
-        songs.filter { song in
-            FileManager.default.fileExists(
-                atPath: AudioPlayerManager.importedMusicDirectory
-                    .appendingPathComponent("\(song.songName).mp3").path
-            )
-        }
+        songs.filter(\.isImported)
     }
 
     private let allContexts: [MusicContext] = [
