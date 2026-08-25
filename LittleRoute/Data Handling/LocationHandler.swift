@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import MapKit
 import Observation
+import os
 
 // Points of interest reference
 // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
@@ -239,25 +240,40 @@ class LocationHandler: NSObject, CLLocationManagerDelegate, POIProviding {
     // of the two-step authorization dance (when-in-use -> always). this fires once
     // on delegate assignment with whatever we already had, so an existing install
     // that only granted when-in-use gets offered the upgrade on next launch.
+    // The `**ERROR:` prefixes these four lines used to carry are gone, and that
+    // is not tidying. They were a level field written by hand, because print has
+    // no level field; Logger does, so keeping them would say the same thing
+    // twice — and in the .notDetermined case it said it wrongly. Waiting for the
+    // user to answer a prompt we have only just put in front of them is the
+    // normal opening state of every first launch, not a fault. The substance of
+    // each message is otherwise untouched.
+    //
+    // The two grants are .info: they happen about once per launch, they are the
+    // first thing anyone checks when location isn't working, and .info survives
+    // into a sysdiagnose whereas .debug does not.
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
 
         switch manager.authorizationStatus {
         case .authorizedWhenInUse:
             locationManager.startUpdatingLocation()
-            print("location auth granted successfully (when in use)")
+            Log.location.info("location auth granted successfully (when in use)")
             // now, and only now, is the always-prompt worth spending -- iOS will
             // actually show it once when-in-use is already granted.
             requestAlwaysUpgradeIfNeeded()
         case .authorizedAlways:
             locationManager.startUpdatingLocation()
-            print("location auth granted successfully (always)")
+            Log.location.info("location auth granted successfully (always)")
         case .denied, .restricted:
+            // .error, because this one really is fatal to the premise: with no
+            // authorization there are no fixes, with no fixes there is no
+            // detection, and every other diagnostic downstream of here will be
+            // silence that looks like a different bug.
             // @TODO: create screen that requests user to grant authorization to continue using the app
-            print("**ERROR: location auth failed/not granted!")
+            Log.location.error("location auth failed/not granted!")
         case .notDetermined:
             // Wait for user to make a choice
-            print("**ERROR: awaiting user location auth")
+            Log.location.debug("awaiting user location auth")
         @unknown default:
             break
         }
@@ -307,10 +323,18 @@ class LocationHandler: NSObject, CLLocationManagerDelegate, POIProviding {
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         // this used to land in a published var nobody read, which is a fancy way of
-        // saying it vanished. print keeps it visible until LR-26 swaps in a Logger.
-        // @TODO: replace with Logger(subsystem:category:) and decide whether the user
-        //        ever needs to see this (kCLErrorLocationUnknown is transient noise)
-        print("**ERROR: location manager failed -- \(error.localizedDescription)")
+        // saying it vanished, and then in a print, which meant it only existed while
+        // Xcode was attached. It now goes somewhere that keeps it.
+        //
+        // .error is the level with the worst spam risk here and still the right one.
+        // kCLErrorLocationUnknown is genuinely transient — the fix just isn't ready
+        // yet — and .error is persisted, so a run of them takes up room. But the
+        // alternative buries a denied-while-running or a heading failure under the
+        // same silence this line was written to end, and this delegate method is not
+        // called per fix, only per failure.
+        // @TODO: split kCLErrorLocationUnknown down to .debug and leave the rest here,
+        //        and decide separately whether the user ever needs to see any of it
+        Log.location.error("location manager failed -- \(error.localizedDescription, privacy: .public)")
     }
 }
 

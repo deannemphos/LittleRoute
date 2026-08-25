@@ -16,6 +16,7 @@
 
 import Foundation
 import SwiftData
+import os
 
 // MARK: - Adding a version
 //
@@ -424,7 +425,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // log and carry on.
     private static func collapseDuplicateSongNames(in context: ModelContext) {
         guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
-            print("songName dedup: could not read the songs, leaving any duplicates in place")
+            Log.migration.error("songName dedup: could not read the songs, leaving any duplicates in place")
             return
         }
 
@@ -477,13 +478,21 @@ enum SongMigrationPlan: SchemaMigrationPlan {
 
         do {
             try context.save()
-            // Printed even when both counts are zero, which is the common case
-            // and the one worth confirming: this line is how anyone with a Mac
-            // finds out the stage ran at all, and silence would be
-            // indistinguishable from SwiftData having skipped it.
-            print("songName dedup: collapsed \(deleted) duplicate row(s) across \(collidingNames) name(s)")
+            // Emitted even when both counts are zero, which is the common case
+            // and the one worth confirming: this line is how anyone finds out
+            // the stage ran at all, and silence would be indistinguishable from
+            // SwiftData having skipped it.
+            //
+            // That is also why it is a .notice and why both counts are marked
+            // .public. The message text is a known string — it is quoted in the
+            // handoff notes as the thing to search Console for — and a line that
+            // survives to the log but reads "collapsed <private> duplicate
+            // row(s) across <private> name(s)" would satisfy the search while
+            // answering none of the question behind it. It fires once per store,
+            // ever, so persisting it costs nothing.
+            Log.migration.notice("songName dedup: collapsed \(deleted, privacy: .public) duplicate row(s) across \(collidingNames, privacy: .public) name(s)")
         } catch {
-            print("songName dedup: could not save, leaving \(deleted) duplicate row(s) in place — the unique constraint may now refuse the migration: \(error)")
+            Log.migration.error("songName dedup: could not save, leaving \(deleted, privacy: .public) duplicate row(s) in place — the unique constraint may now refuse the migration: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -570,7 +579,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // changing now, while it is a rename and not a debugging session.
     private static func rewriteLocationsAsContextKeys(in context: ModelContext) {
         guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
-            print("context key migration: could not read the migrated songs, leaving every tag in its old spelling")
+            Log.migration.error("context key migration: could not read the migrated songs, leaving every tag in its old spelling")
             return
         }
 
@@ -606,14 +615,35 @@ enum SongMigrationPlan: SchemaMigrationPlan {
 
         if !unrecognised.isEmpty {
             // sorted so the line is stable between runs and worth diffing
-            print("context key migration: kept \(unrecognised.count) distinct tag(s) naming no context, verbatim: \(unrecognised.sorted())")
+            //
+            // .notice, and the level is the point. Nothing has failed — the tags
+            // were kept, which is the whole policy above — but this is the only
+            // record that will ever exist of something being in the store that
+            // no version of this app can explain. It is also unrepeatable: the
+            // stage runs once, and afterwards those strings are simply normal
+            // rows nobody will look at twice. .debug or .info would let the one
+            // chance to notice fall off the end of a buffer.
+            //
+            // Verbatim, and therefore .public — the strings are the entire
+            // content of the line, and a redacted list of unrecognised tags is
+            // just the count with extra steps. String(describing:) because
+            // OSLogMessage will not interpolate an array, and because it
+            // reproduces the bracketed spelling this line has always had.
+            Log.migration.notice("context key migration: kept \(unrecognised.count, privacy: .public) distinct tag(s) naming no context, verbatim: \(String(describing: unrecognised.sorted()), privacy: .public)")
         }
 
         do {
             try context.save()
-            print("context key migration: rewrote tags on \(rewritten) of \(songs.count) songs")
+            // The live diagnostic. The handoff notes name this exact string as
+            // the way to tell whether the V3 → V4 stage ran at all against a
+            // pre-LR-15 store, so the text is deliberately unchanged and both
+            // numbers are deliberately readable in release — someone searching
+            // Console for it is searching for the counts, not for the fact that
+            // a line exists. .notice for the same reason the dedup line is:
+            // once per store, and useless if it doesn't survive to be found.
+            Log.migration.notice("context key migration: rewrote tags on \(rewritten, privacy: .public) of \(songs.count, privacy: .public) songs")
         } catch {
-            print("context key migration: could not save, leaving every tag in its old spelling: \(error)")
+            Log.migration.error("context key migration: could not save, leaving every tag in its old spelling: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -651,7 +681,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // stage means.
     private static func backfillIsImported(in context: ModelContext) {
         guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV3.Song>()) else {
-            print("isImported backfill: could not read the migrated songs, leaving every flag at its default")
+            Log.migration.error("isImported backfill: could not read the migrated songs, leaving every flag at its default")
             return
         }
 
@@ -669,9 +699,13 @@ enum SongMigrationPlan: SchemaMigrationPlan {
 
         do {
             try context.save()
-            print("isImported backfill: flagged \(flagged) of \(songs.count) songs as imported")
+            // Same shape and same treatment as the other two once-per-store
+            // completion lines: .notice, counts readable, so that "the backfill
+            // ran and found nothing" stays distinguishable from "the backfill
+            // never ran" long after the launch that decided it.
+            Log.migration.notice("isImported backfill: flagged \(flagged, privacy: .public) of \(songs.count, privacy: .public) songs as imported")
         } catch {
-            print("isImported backfill: could not save, leaving every flag at its default: \(error)")
+            Log.migration.error("isImported backfill: could not save, leaving every flag at its default: \(String(describing: error), privacy: .public)")
         }
     }
 }
