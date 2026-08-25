@@ -22,6 +22,11 @@ struct LibraryView: View {
     @AppStorage(AppTheme.storageKey) private var themeRaw = AppTheme.minimal.rawValue
     private var theme: AppTheme { AppTheme.current(from: themeRaw) }
 
+    // The tag grid packs as many chips per row as fit at this width. It has to
+    // grow with the chip's own text or the labels start shrinking away as soon
+    // as the user turns their text size up.
+    @ScaledMetric(relativeTo: .caption) private var chipMinWidth: CGFloat = 92.0
+
     // Songs whose mp3 lives in the imported music directory
     private var importedSongs: [Song] {
         songs.filter { song in
@@ -49,7 +54,7 @@ struct LibraryView: View {
                 if importedSongs.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "music.note.house")
-                            .font(.system(size: 44))
+                            .themedFont(.emptyStateGlyph, theme: theme)
                             .foregroundStyle(theme.secondaryText)
                             .accessibilityHidden(true) // the two lines below say it in words
                         Text("No imported songs yet")
@@ -126,15 +131,15 @@ struct LibraryView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(song.title)
-                            .font(.system(size: 16, weight: .semibold, design: theme == .y2k ? .rounded : .default))
+                            .themedFont(.cardTitle, theme: theme)
                             .foregroundStyle(theme == .y2k ? Y2K.chromeDark : .primary)
                         Text(song.artist ?? "Unknown Artist")
-                            .font(.system(size: 13))
+                            .themedFont(.cardSubtitle, theme: theme)
                             .foregroundStyle(theme == .y2k ? Y2K.chromeDark.opacity(0.7) : .secondary)
                     }
                     Spacer()
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 13, weight: .semibold))
+                        .themedFont(.disclosureGlyph, theme: theme)
                         .foregroundStyle(theme == .y2k ? Y2K.chromeDark.opacity(0.7) : .secondary)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                         .accessibilityHidden(true) // its rotation is the disclosure state, said below
@@ -148,7 +153,7 @@ struct LibraryView: View {
 
             // Context tag chips (collapsible)
             if isExpanded {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: chipMinWidth), spacing: 8)], spacing: 8) {
                     ForEach(allContexts, id: \.rawValue) { context in
                         contextChip(song: song, context: context)
                     }
@@ -173,8 +178,11 @@ struct LibraryView: View {
             toggleTag(song: song, context: context)
         } label: {
             Text(context.rawValue)
-                .font(.system(size: 12, weight: .semibold, design: theme == .y2k ? .rounded : .default))
+                .themedFont(.chipLabel, theme: theme)
                 .lineLimit(1)
+                // context names are single words, so shrinking beats truncating
+                // once the chip stops being able to grow with the type
+                .minimumScaleFactor(0.75)
                 .foregroundStyle(
                     isTagged
                     ? (theme == .y2k ? Color.white : Color(.systemBackground))
