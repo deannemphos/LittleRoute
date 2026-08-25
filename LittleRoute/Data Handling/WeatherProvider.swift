@@ -13,10 +13,19 @@ protocol WeatherProviding {
 
 // WeatherKit-backed provider.
 //
-// NOTE: WeatherKit requires the WeatherKit capability/entitlement and an
-// active Apple Developer membership. Without them the fetch throws and this
-// provider reports nil, so context detection simply proceeds without a
-// weather override.
+// NOTE: WeatherKit needs two things, and the app bundle only controls one of
+// them. The `com.apple.developer.weatherkit` entitlement is in
+// LittleRoute.entitlements, but that key is only honoured if the WeatherKit
+// capability is also enabled for this App ID on an active Apple Developer
+// membership — that half lives in the developer portal, not in the repo.
+// With the key present and the capability missing, signing may even fail
+// outright; with neither, every fetch throws.
+//
+// Without them the fetch throws and this provider reports nil, so context
+// detection simply proceeds without a weather override — which means .rainy
+// and .snowy never fire. See the failure diagnosis below: the point of that
+// bookkeeping is that a whole feature going dark should not look like a
+// dropped packet.
 final class WeatherKitProvider: WeatherProviding {
     private let service = WeatherService.shared
 
@@ -28,6 +37,24 @@ final class WeatherKitProvider: WeatherProviding {
     private var cachedAt: Date?
     private var cachedLocation: CLLocation?
     private var fetchInFlight = false
+
+    // Failure bookkeeping — see noteFailure(_:).
+    private var consecutiveFailures = 0
+    private var everSucceeded = false
+    private var diagnosedUnprovisioned = false
+
+    // How many failures in a row, with no success ever, before we stop
+    // blaming the network and call it a provisioning problem. Three is
+    // ~30s of polling: long enough that a single dropped request or a
+    // tunnel doesn't trip it, short enough to see on a first run.
+    private static let unprovisionedFailureThreshold = 3
+
+    init() {
+        // One line per launch so the feature is at least visible in the
+        // console before anything has had a chance to fail. Whether it
+        // actually works is answered by the first fetch, either way.
+        print("WeatherKitProvider: active — weather overrides require the WeatherKit capability on this App ID.")
+    }
 
     func currentCondition(at location: CLLocation,
                           completion: @escaping (ContextClassifier.Factors.Condition?) -> Void) {
@@ -53,12 +80,55 @@ final class WeatherKitProvider: WeatherProviding {
                 self.cachedCondition = condition
                 self.cachedAt = Date()
                 self.cachedLocation = location
+                self.noteSuccess()
                 completion(condition)
             } catch {
                 // Missing entitlement, network failure, quota — all non-fatal
-                print("WeatherKitProvider: fetch failed: \(error)")
+                self.noteFailure(error)
                 completion(nil)
             }
+        }
+    }
+
+    // MARK: - Failure diagnosis
+
+    // A missing capability and a flaky network throw the same way here, and
+    // the old one-print-per-failure made them read identically: a single
+    // buried line that everyone learns to scroll past. The tell isn't the
+    // error, it's the pattern — a network blip eventually recovers, an
+    // unprovisioned app never succeeds even once. So count failures against
+    // "have we ever got an answer this launch" and say the quiet part out
+    // loud exactly once when the pattern is conclusive.
+    private func noteSuccess() {
+        consecutiveFailures = 0
+        guard !everSucceeded else { return }
+        everSucceeded = true
+        print("WeatherKitProvider: first successful fetch — WeatherKit is provisioned; weather overrides are live.")
+    }
+
+    private func noteFailure(_ error: Error) {
+        consecutiveFailures += 1
+
+        if !everSucceeded,
+           !diagnosedUnprovisioned,
+           consecutiveFailures >= Self.unprovisionedFailureThreshold {
+            diagnosedUnprovisioned = true
+            print("""
+                WeatherKitProvider: WEATHER DISABLED — \(consecutiveFailures) failed fetches, \
+                none successful this launch. That pattern means WeatherKit is not provisioned \
+                for \(Bundle.main.bundleIdentifier ?? "this bundle") rather than that the network \
+                is flaky. The .rainy and .snowy contexts cannot fire until the WeatherKit \
+                capability is enabled for this App ID in the Apple Developer portal and the app \
+                is re-signed with a refreshed profile. Last error: \(error)
+                """)
+            return
+        }
+
+        // Ordinary noise, and only while the verdict is still open. Once
+        // we've diagnosed, stop reprinting the same error every poll —
+        // that spam is what made the original line easy to ignore.
+        if !diagnosedUnprovisioned {
+            print("WeatherKitProvider: fetch failed (\(consecutiveFailures) in a row): \(error)")
         }
     }
 
