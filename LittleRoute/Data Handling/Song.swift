@@ -113,7 +113,7 @@ extension Song {
     // that quietly deleted them on the way past would finish the job the
     // migration refused to do.
     var taggedContexts: [MusicContext] {
-        locations.compactMap(MusicContext.init(storageKey:))
+        locations.compactMap { MusicContext(storageKey: $0) }
     }
 }
 
