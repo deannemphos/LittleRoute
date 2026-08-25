@@ -34,6 +34,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private var playbackTimer: Timer?
     private var ticksSinceNowPlayingSync = 0 // see startPlaybackTimer
     private var wasPlayingBeforeInterruption = false // see handleInterruption
+    private var hasActivatedSession = false // see activateSession / deactivateSession
 
     // 0.5s per playback tick, so the lock screen's elapsed time is reconciled every 5 seconds
     private static let nowPlayingSyncTicks = 10
@@ -49,12 +50,69 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     // Configure the shared audio session for background playback.
     // Requires the "audio" UIBackgroundMode (declared in Info.plist).
+    //
+    // Category only, deliberately. Activating the session is the act that silences
+    // whatever else the device is playing, and this runs from the singleton's init —
+    // which the first view to so much as read AudioPlayerManager.shared triggers, long
+    // before the user has asked for a note of music. So simply opening LittleRoute used
+    // to cut off someone's podcast. Declaring the category takes nothing from anyone; it
+    // only tells iOS what kind of app we are. The session itself is taken in
+    // activateSession, on the way into actual playback.
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("Failed to configure audio session: \(error)")
+        }
+    }
+
+    // Take the audio session, immediately before we make a sound. Every path into
+    // playback goes through here.
+    //
+    // Called ahead of every play(), including the repeated ones, rather than only the
+    // first: activating an already-active session is a no-op, and that is far safer than
+    // keeping a Bool that claims we are active and being wrong. iOS deactivates us
+    // without asking — for interruptions, and for a media services reset — and a stale
+    // "already active" in that direction would mean silently never taking the session
+    // back, i.e. a player that looks like it is playing and makes no sound.
+    //
+    // Returns whether we got it, so callers can leave isPaused honest if we didn't.
+    private func activateSession() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            hasActivatedSession = true
+            return true
+        } catch {
+            print("Failed to activate audio session: \(error)")
+            return false
+        }
+    }
+
+    // Hand the session back, and tell whatever we interrupted that it can pick up again.
+    //
+    // Called from exactly one place — the empty-queue teardown in reloadQueue, where
+    // there is genuinely nothing left to play. Everywhere else that playback stops, we
+    // keep it:
+    //
+    //   - Not on pause. A paused music app is still the app that owns the session; that
+    //     is what keeps the lock-screen play button live. Giving the session up for a
+    //     two-second pause invites another app to take it, and we may not get it back.
+    //   - Not on an interruption. iOS has already deactivated us by the time .began
+    //     arrives, and telling other apps to resume mid-call is the exact opposite of
+    //     what the .shouldResume path below is trying to do.
+    //   - Not on backgrounding. Surviving the screen locking is the entire point of the
+    //     audio background mode.
+    //
+    // The flag only ever gates deactivation, never activation — being wrong here costs a
+    // redundant call, whereas being wrong the other way costs silence.
+    private func deactivateSession() {
+        guard hasActivatedSession else { return }
+        hasActivatedSession = false
+
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Failed to deactivate audio session: \(error)")
         }
     }
 
@@ -166,11 +224,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
 
         // Our session was deactivated for the duration of the interruption, so it has
-        // to be reactivated before the player will make any sound again.
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to reactivate audio session after interruption: \(error)")
+        // to be reactivated before the player will make any sound again. Same door as
+        // every other entry into playback — this is not a special case, it just happens
+        // to be the one where we know for certain the session is gone.
+        guard activateSession() else {
+            print("Interruption ended, but the audio session would not come back")
             isPaused = true
             updateNowPlayingInfo()
             return
@@ -406,15 +464,41 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             stopPlaybackTimer()
         }
         else if audioPlayer != nil && !audioPlayer!.isPlaying {
-            audioPlayer!.play()
-            isPaused = false
-            startPlaybackTimer()
+            // this is usually the first time anyone has asked for sound, so it's where
+            // the session actually gets taken — see activateSession
+            if activateSession() {
+                audioPlayer!.play()
+                isPaused = false
+                startPlaybackTimer()
+            } else {
+                // no session, no sound. Say so rather than showing a pause button
+                // over silence.
+                isPaused = true
+                stopPlaybackTimer()
+            }
         }
         
         updateNowPlayingInfo()
         print("Audio Player is now \(isPaused ? "paused" : "playing")")
     }
     
+    // Start whatever loadAudio just prepared. skip / previous / play(song:) all do the
+    // same thing once the file is loaded, and all three need the session in hand before
+    // the player will be audible, so the sequence lives here instead of in each of them.
+    private func playLoadedSong() {
+        guard activateSession() else {
+            isPaused = true
+            stopPlaybackTimer()
+            updateNowPlayingInfo()
+            return
+        }
+
+        audioPlayer?.play()
+        isPaused = false
+        startPlaybackTimer()
+        updateNowPlayingInfo()
+    }
+
     public func skip() {
         guard !songQueue.isEmpty else {
             print("No songs in queue")
@@ -428,10 +512,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let nextSong = songQueue[currentIndex].songName
         
         loadAudio(fileName: nextSong)
-        audioPlayer?.play()
-        isPaused = false
-        startPlaybackTimer()
-        updateNowPlayingInfo()
+        playLoadedSong()
     }
     
     // Jump to a specific song already in the queue and play it
@@ -444,10 +525,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         currentIndex = index
         currentSong = songQueue[currentIndex]
         loadAudio(fileName: songQueue[currentIndex].songName)
-        audioPlayer?.play()
-        isPaused = false
-        startPlaybackTimer()
-        updateNowPlayingInfo()
+        playLoadedSong()
     }
 
     public func previous() {
@@ -462,10 +540,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         let previousSong = songQueue[currentIndex].songName
         
         loadAudio(fileName: previousSong)
-        audioPlayer?.play()
-        isPaused = false
-        startPlaybackTimer()
-        updateNowPlayingInfo()
+        playLoadedSong()
     }
 
     // Toggle shuffle mode
@@ -556,6 +631,16 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             self.reloadQueue(newContext: newContext, shuffle: self.isShuffled, songs: songs, keepCurrentSong: false)
 
             guard let newPlayer = self.audioPlayer, self.currentSong != nil else { return }
+
+            // We only get here off the back of something that was already audible, so
+            // the session is normally still ours — but this is a play() like any other
+            // and the fade-in would be a silent one if it weren't.
+            guard self.activateSession() else {
+                self.isPaused = true
+                self.updateNowPlayingInfo()
+                return
+            }
+
             newPlayer.volume = 0.0
             newPlayer.play()
             newPlayer.setVolume(1.0, fadeDuration: fadeDuration)
@@ -590,6 +675,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             stopPlaybackTimer()
             audioPlayer?.stop()
             audioPlayer = nil
+
+            // The one place we genuinely stop rather than pause: no player, no queue,
+            // nothing for the user to press play on. Hand the session back so whatever
+            // we interrupted on the way in can carry on.
+            deactivateSession()
+            // and drop any pending "resume when the call ends" intent along with it —
+            // we just told the rest of the device we were finished.
+            wasPlayingBeforeInterruption = false
+
             isPaused = true
             songLength = 0.0
             currentTime = 0.0
