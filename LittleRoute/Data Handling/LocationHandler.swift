@@ -115,7 +115,14 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
             return
         }
 
-        // Build a region centered on current coordinate
+        // Build a region centered on current coordinate. MKCoordinateRegion
+        // takes the full *span*, not a radius, so the doubling here is a unit
+        // conversion: a square of side 2r circumscribes the circle of radius r
+        // we actually want covered. `radius` used to arrive pre-doubled from
+        // ContextClassifier on top of this, which made the query a 2.4km
+        // square -- and since MKLocalSearch caps its result count, the extra
+        // reach only diluted the sample. That doubling is gone; this one
+        // stays.
         let region = MKCoordinateRegion(
             center: currentLocation.coordinate,
             latitudinalMeters: radius * 2,

@@ -27,6 +27,26 @@ class ContextDetector: ObservableObject {
     // fix brings another chance along with it.
     let minimumSearchInterval: TimeInterval
 
+    // Floor on how far the user has to have moved before we'll spend another
+    // one. The interval above only limits how *often* we ask; on its own it
+    // still lets someone sitting in a cafe re-ask the same question about the
+    // same square, every interval, for as long as they sit there — and get the
+    // same answer back every time.
+    //
+    // 50m is picked against ContextClassifier.profiles: the smallest effective
+    // radius there is 70m (restaurants), so even the tightest zone is ~140m
+    // across and a walk through one gets sampled two or three times rather
+    // than stepped over. It also sits well clear of the drift a genuinely
+    // stationary kCLLocationAccuracyBest fix wanders by, so GPS noise alone
+    // can't unlock a search. And it's comfortably under the provider's own
+    // 400m distance arm, so it never becomes the binding constraint on a
+    // moving user — which is the whole point: this is a brake for the
+    // stationary case, not a second throttle on the walking one.
+    //
+    // Gates the *search*, not the evaluation — see evaluate() for why that
+    // distinction matters.
+    let minimumSearchDisplacement: CLLocationDistance
+
     // How long a candidate context must persist before switching.
     //
     // Still measured against now(); what changed is that it's *sampled* when
@@ -90,6 +110,14 @@ class ContextDetector: ObservableObject {
     private var isRunning = false
     private var lastSearchStarted: Date?
 
+    // Where the last successful search was centred, and what it handed back.
+    // These two move together on purpose: the displacement gate is really
+    // asking "am I still standing where the results I'm holding describe?",
+    // so a baseline with no results behind it would mean nothing. A search
+    // that fails therefore updates neither, and the next fix retries.
+    private var lastSearchLocation: CLLocation?
+    private var lastSearchPlaces: [MKMapItem]?
+
     // Injectable clock for testability
     var now: () -> Date = { Date() }
 
@@ -100,6 +128,7 @@ class ContextDetector: ObservableObject {
     init(poiProvider: any POIProviding,
          initialContext: MusicContext = .all,
          minimumSearchInterval: TimeInterval = 10,
+         minimumSearchDisplacement: CLLocationDistance = 50,
          dwellDuration: TimeInterval = 30,
          searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
          debtAccumulationDuration: TimeInterval? = nil,
@@ -108,6 +137,7 @@ class ContextDetector: ObservableObject {
         self.poiProvider = poiProvider
         self.confirmedContext = initialContext
         self.minimumSearchInterval = minimumSearchInterval
+        self.minimumSearchDisplacement = minimumSearchDisplacement
         self.dwellDuration = dwellDuration
         self.searchRadius = searchRadius
 
@@ -156,10 +186,12 @@ class ContextDetector: ObservableObject {
     // Used by the "update context" button in the UI.
     public func refreshNow() {
         guard let poiProvider = poiProvider,
-              poiProvider.currentLocation != nil else { return }
+              let location = poiProvider.currentLocation else { return }
 
-        // Counts against the rate limit like any other search, so a tap
-        // immediately followed by a fix doesn't fire two.
+        // Deliberately jumps both gates: the user asked, out loud, by tapping a
+        // button, and "you haven't moved" is not an answer to that. Counts
+        // against the rate limit like any other search, so a tap immediately
+        // followed by a fix doesn't fire two.
         lastSearchStarted = now()
 
         poiProvider.getPointsOfInterest(
@@ -168,6 +200,13 @@ class ContextDetector: ObservableObject {
         ) { [weak self] result in
             guard let self = self, case .success(let places) = result else { return }
             DispatchQueue.main.async {
+                // A manual refresh is a real search, so it re-arms the
+                // displacement gate and reseeds the cache like any other —
+                // otherwise the next fix would immediately buy a second one
+                // covering the ground we just paid for.
+                self.lastSearchLocation = location
+                self.lastSearchPlaces = places
+
                 let evaluation = ContextClassifier.evaluate(
                     places: places,
                     userLocation: poiProvider.currentLocation,
@@ -191,6 +230,16 @@ class ContextDetector: ObservableObject {
     // MARK: - Detection
     // One evaluation pass: look at what's around us, score it, feed the state
     // machine. Runs on every accepted fix, plus once from start().
+    //
+    // Two gates sit in front of the MKLocalSearch, and they gate the *search*
+    // only — never the pass as a whole. Every fix still walks the state
+    // machine, because dwell and debt both advance on evaluations and neither
+    // one has anything to do with whether we bought fresh POIs this time.
+    //
+    // Main thread only: it writes @Published state directly on the gated path.
+    // Both callers oblige — start() runs on the app's main actor, and the
+    // provider's callback comes off a CLLocationManager delegate created on
+    // main.
     private func evaluate() {
         guard let poiProvider = poiProvider,
               let location = poiProvider.currentLocation else { return }
@@ -200,7 +249,6 @@ class ContextDetector: ObservableObject {
         let evaluatedAt = now()
         if let lastSearchStarted,
            evaluatedAt.timeIntervalSince(lastSearchStarted) < minimumSearchInterval { return }
-        lastSearchStarted = evaluatedAt
 
         let speed = currentSpeed()
 
@@ -215,6 +263,29 @@ class ContextDetector: ObservableObject {
             }
         }
 
+        // Displacement gate. Standing still means the next search would centre
+        // on the same square and come back with the same places, so don't buy
+        // the same answer twice — re-score the ones already in hand.
+        //
+        // Re-scoring rather than bailing out is the load-bearing half. The
+        // dwell window only closes on an evaluation, and the person who has
+        // just sat down somewhere is exactly the one whose dwell is about to
+        // complete; skipping the pass outright would put back the hole LR-12
+        // closed, just reached from the other side. Distances are recomputed
+        // against the current fix and the current weather, so drift and a
+        // turn in the sky both still move the scores — only the network call
+        // is skipped.
+        if let lastSearchLocation, let lastSearchPlaces,
+           location.distance(from: lastSearchLocation) < minimumSearchDisplacement {
+            apply(places: lastSearchPlaces, userLocation: location, speed: speed)
+            return
+        }
+
+        // A search is only now actually starting, so this is where it starts
+        // counting against the rate limit — a gated pass costs MapKit nothing
+        // and shouldn't spend the budget.
+        lastSearchStarted = evaluatedAt
+
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
@@ -223,26 +294,45 @@ class ContextDetector: ObservableObject {
             switch result {
             case .success(let places):
                 DispatchQueue.main.async {
-                    let factors = ContextClassifier.Factors(weather: self.latestWeather, speed: speed)
-                    self.tickDebt(isMoving: (speed ?? 0) >= self.movementSpeedThreshold)
-                    let evaluation = ContextClassifier.evaluate(
-                        places: places,
-                        userLocation: poiProvider.currentLocation,
-                        debts: self.debts,
-                        factors: factors
-                    )
-                    self.zones = evaluation.zones
-                    self.contextScores = evaluation.scores
-                    self.process(
-                        observation: evaluation.context,
-                        observationIgnoringDebt: evaluation.contextIgnoringDebt
-                    )
+                    // The gate's baseline is "where the results we're holding
+                    // came from", so it moves here, alongside the results.
+                    self.lastSearchLocation = location
+                    self.lastSearchPlaces = places
+                    self.apply(places: places,
+                               userLocation: poiProvider.currentLocation,
+                               speed: speed)
                 }
             case .failure(let error):
-                // Transient search failures shouldn't disturb the state machine
+                // Transient search failures shouldn't disturb the state
+                // machine — and deliberately leave the gate's baseline where
+                // it was, so the next fix gets to retry instead of the user
+                // having to walk 50m to earn one.
                 print("ContextDetector POI search failed: \(error)")
             }
         }
+    }
+
+    // Push one set of places through the classifier and into the state machine.
+    // Shared by the fresh-search path and the displacement-gated re-score so
+    // the two are identical in everything except where the places came from.
+    // Main thread only: writes @Published state.
+    private func apply(places: [MKMapItem],
+                       userLocation: CLLocation?,
+                       speed: CLLocationSpeed?) {
+        let factors = ContextClassifier.Factors(weather: latestWeather, speed: speed)
+        tickDebt(isMoving: (speed ?? 0) >= movementSpeedThreshold)
+        let evaluation = ContextClassifier.evaluate(
+            places: places,
+            userLocation: userLocation,
+            debts: debts,
+            factors: factors
+        )
+        zones = evaluation.zones
+        contextScores = evaluation.scores
+        process(
+            observation: evaluation.context,
+            observationIgnoringDebt: evaluation.contextIgnoringDebt
+        )
     }
 
     // Snapshot of the live external factors feeding the classifier.
