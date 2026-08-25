@@ -263,7 +263,9 @@ struct ContentView: View {
                 audioManager.switchContext(to: newContext, songs: songs)
             }
             contextDetector.start()
-            audioManager.musicPlayPause() // Auto-start playback on launch if songs are available
+            // Auto-start playback on launch, unless the user is already listening
+            // to something else — see startPlaybackIfNothingElseIsPlaying
+            audioManager.startPlaybackIfNothingElseIsPlaying()
         }
         .onChange(of: songs) { oldValue, newValue in
             audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
