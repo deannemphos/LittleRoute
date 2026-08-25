@@ -328,20 +328,35 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             let fileManager = FileManager.default
             let files = try fileManager.contentsOfDirectory(atPath: musicPath)
             let mp3Files = files.filter { $0.hasSuffix(".mp3") }
-            
+
+            // One fetch for the whole folder, in place of the FetchDescriptor this used
+            // to run per file. Whole Songs and not just their names, deliberately: the
+            // existing ones go straight back to the caller, which reads every field off
+            // them to build the queue — so narrowing this fetch would only move the round
+            // trips from here to the first property access. See existingSongNames for the
+            // case where narrowing does pay.
+            var songsByName = existingSongsByName(in: modelContext)
+
             for fileName in mp3Files {
                 let songName = fileName.replacingOccurrences(of: ".mp3", with: "")
                 let title = songName // Use filename as title
-                
+
                 // Check if song already exists
-                let descriptor = FetchDescriptor<Song>(predicate: #Predicate { $0.songName == songName })
-                let existingSongs = try? modelContext.fetch(descriptor)
-                
-                if let existing = existingSongs?.first {
+                if let existing = songsByName[songName] {
                     loadedSongs.append(existing)
                 } else {
                     let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: ["All"], populationMin: 0, populationMax: 10000000)
                     modelContext.insert(newSong)
+
+                    // Fold the new song into the index before moving on. Two files in the
+                    // folder can still reduce to a single songName, and the per-file fetch
+                    // caught that for free — a SwiftData fetch sees pending inserts, so the
+                    // second file found the first one's unsaved row. A single fetch up front
+                    // sees nothing that happens after it, so we keep it current by hand.
+                    // Keyed on the model's own songName rather than the local variable,
+                    // since Song.init normalizes what it is handed and an index that
+                    // disagrees with the store is worse than no index at all.
+                    songsByName[newSong.songName] = newSong
                     loadedSongs.append(newSong)
                 }
             }
@@ -377,6 +392,20 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // title/artist when available, and insert new Song records.
     @MainActor
     public func importSongs(from urls: [URL], modelContext: ModelContext) async {
+        // One fetch for the whole batch, in place of the two per file this used to run.
+        // It has to stay current as we insert, because a name added here has to be
+        // visible to the rest of the loop: two of the selected URLs can easily share a
+        // basename — the same track picked out of two folders — and the per-file fetch
+        // caught that for free, since a SwiftData fetch sees pending inserts. A snapshot
+        // taken once does not, so we maintain it ourselves.
+        //
+        // It can go stale in one narrow way the per-file fetch couldn't: this suspends at
+        // every await below, and other main-actor code could in principle insert a Song in
+        // the gap. Nothing in the app does today — the importer is a single sheet, and the
+        // bundle load only runs against an empty library — and the price of being wrong is
+        // one duplicate row, against N round trips saved on every import.
+        var knownSongNames = existingSongNames(in: modelContext)
+
         for url in urls {
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
@@ -386,7 +415,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
             // Copy the file in (even if a Song record already exists from a
             // previous failed attempt, the file may be missing)
-            if !FileManager.default.fileExists(atPath: destination.path) || !songExists(songName, in: modelContext) {
+            if !FileManager.default.fileExists(atPath: destination.path) || !knownSongNames.contains(songName) {
                 do {
                     try await Task.detached(priority: .userInitiated) {
                         try Self.coordinatedCopy(from: url, to: destination)
@@ -398,7 +427,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             }
 
             // Skip the record insert for duplicates
-            if songExists(songName, in: modelContext) {
+            if knownSongNames.contains(songName) {
                 print("Song already exists, skipping record: \(songName)")
                 continue
             }
@@ -420,6 +449,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
             let newSong = Song(title: title, songName: songName, artist: artist, locations: ["All"], populationMin: 0, populationMax: 10000000)
             modelContext.insert(newSong)
+            // and the rest of the batch now knows about it — see the note above the fetch.
+            // The model's own songName, not the local one, so the set says what the store
+            // will say: Song.init normalizes the name it is given, and a URL like
+            // "track.mp3.mp3" leaves the two disagreeing.
+            knownSongNames.insert(newSong.songName)
             print("Imported song: \(title)")
         }
 
@@ -434,9 +468,32 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: allSongs)
     }
 
-    private func songExists(_ songName: String, in modelContext: ModelContext) -> Bool {
-        let descriptor = FetchDescriptor<Song>(predicate: #Predicate { $0.songName == songName })
-        return ((try? modelContext.fetch(descriptor)) ?? []).isEmpty == false
+    // Every songName already in the store, as a Set to test membership against. This and
+    // existingSongsByName replace a songExists(_:in:) that ran a predicated fetch per
+    // question — importing forty songs asked eighty times, and loading the bundle once
+    // per file, when the answer to all of them fits in one round trip.
+    //
+    // propertiesToFetch keeps the rows narrow: one String per song rather than a fully
+    // materialized Song. That is only safe because the caller asks about names and
+    // nothing else — everything left out comes back as a fault, so reading one property
+    // sends SwiftData straight back to the store, which is the exact round trip this
+    // exists to avoid. Narrowing a fetch whose results get used is a false economy, which
+    // is why loadSongsFromBundle asks for whole objects instead.
+    private func existingSongNames(in modelContext: ModelContext) -> Set<String> {
+        var descriptor = FetchDescriptor<Song>()
+        descriptor.propertiesToFetch = [\.songName]
+        return Set(((try? modelContext.fetch(descriptor)) ?? []).map(\.songName))
+    }
+
+    // Every song in the store, indexed by songName, for the caller that needs the objects
+    // themselves rather than just the names.
+    //
+    // First one wins on a collision, which is the .first the per-name fetch used to take.
+    // Nothing enforces songName uniqueness yet, so duplicates remain possible — and since
+    // neither fetch sorts, "first" was arbitrary between them before and still is.
+    private func existingSongsByName(in modelContext: ModelContext) -> [String: Song] {
+        let songs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
+        return Dictionary(songs.map { ($0.songName, $0) }, uniquingKeysWith: { existing, _ in existing })
     }
 
     // File-coordinated copy. The .forUploading option materializes files that
