@@ -115,7 +115,7 @@ learn.
 `.github/workflows/ios.yml` runs `xcodebuild build-for-testing` and
 `test-without-building` on `macos-latest`. It triggers on push to `main` and on
 pull requests targeting `main`. It has never run on this branch. A draft PR from
-`contexts` to `main` would compile and test all 27 merged tasks. The user has
+`contexts` to `main` would compile and test all 28 merged tasks. The user has
 declined to push so far; the option remains.
 
 ## Known-unverified, highest risk first
