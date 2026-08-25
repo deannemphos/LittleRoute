@@ -363,10 +363,11 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // library. The rows have to be one-per-name by the time the constraint
     // lands, and willMigrate is the only hook that runs before it.
     //
-    // Duplicates genuinely are possible in an existing store. Nothing has ever
-    // enforced this — existingSongsByName in AudioPlayerManager has been
-    // arbitrarily picking a winner between colliding rows all along, and its
-    // comment said as much.
+    // Duplicates genuinely are possible in an existing store, which is the other
+    // half of why this can't wait for didMigrate. Nothing has ever enforced the
+    // name: existingSongsByName in AudioPlayerManager has been arbitrarily
+    // picking a winner between colliding rows all along, and said so in its own
+    // comment until this task made the sentence obsolete.
     static let migrateV4toV5 = MigrationStage.custom(
         fromVersion: SongSchemaV4.self,
         toVersion: SongSchemaV5.self,
