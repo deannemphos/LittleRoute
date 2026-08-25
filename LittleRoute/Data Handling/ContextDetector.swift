@@ -4,11 +4,13 @@ import MapKit
 
 // Dwell-based area/context detection.
 //
-// Polls nearby POIs on a timer and classifies them via ContextClassifier.
-// A new context only becomes "confirmed" after it has been continuously
-// observed for `dwellDuration` — this avoids music flapping when walking
-// along the boundary of two areas. When no mappable POI is observed for a
-// full dwell window, falls back to the generic .traveling context.
+// Evaluates nearby POIs every time the location provider hands us a fix, and
+// classifies them via ContextClassifier. Detection is driven by location
+// delivery, not by a clock — see start() for why that distinction is the whole
+// point of this type. A new context only becomes "confirmed" after it has been
+// continuously observed for `dwellDuration` — this avoids music flapping when
+// walking along the boundary of two areas. When no mappable POI is observed for
+// a full dwell window, falls back to the generic .traveling context.
 //
 // Debt: the confirmed context accrues "debt" over time, but ONLY while the
 // user is actively moving — sitting inside the library keeps the library
@@ -18,8 +20,26 @@ import MapKit
 class ContextDetector: ObservableObject {
 
     // MARK: - Configuration
-    let pollInterval: TimeInterval   // how often to query POIs (MKLocalSearch is rate-limited, keep this modest)
-    let dwellDuration: TimeInterval  // how long a candidate context must persist before switching
+    // Floor on how often we'll actually run an MKLocalSearch. This is a brake,
+    // not a schedule: evaluations are triggered by incoming fixes, and a moving
+    // user can clear the provider's distance threshold several times in quick
+    // succession. MKLocalSearch is rate-limited, so skip the extras — the next
+    // fix brings another chance along with it.
+    let minimumSearchInterval: TimeInterval
+
+    // How long a candidate context must persist before switching.
+    //
+    // Still measured against now(); what changed is that it's *sampled* when
+    // location arrives rather than on a fixed cadence. So promotion happens on
+    // the first evaluation past the window rather than exactly at it, and
+    // switch latency is bounded by the provider's update interval rather than
+    // by dwellDuration. The case that would break this — a stationary user
+    // generating no events at all, right when dwell should be closing — is
+    // handled on the provider side: its throttle has a time arm as well as a
+    // distance one, and automatic pausing is disabled, so fixes keep arriving
+    // while you sit still.
+    let dwellDuration: TimeInterval
+
     let searchRadius: CLLocationDistance
 
     // Time of continuous movement for the confirmed context to reach full debt.
@@ -44,7 +64,7 @@ class ContextDetector: ObservableObject {
     @Published private(set) var confirmedContext: MusicContext
     @Published private(set) var zones: [ContextClassifier.Zone] = []
     @Published private(set) var contextScores: [MusicContext: Double] = [:]
-    // Latest known weather bucket, refreshed each poll (heavily cached upstream)
+    // Latest known weather bucket, refreshed each evaluation (heavily cached upstream)
     @Published private(set) var latestWeather: ContextClassifier.Factors.Condition?
     // Runtime debt per context, 0...ContextClassifier.maxDebt. Only contexts
     // with a nonzero balance are present.
@@ -63,7 +83,12 @@ class ContextDetector: ObservableObject {
     // POIProviding is AnyObject-bound precisely so this can stay weak — a
     // non-class-bound existential has no reference for `weak` to zero out.
     private weak var poiProvider: (any POIProviding)?
-    private var pollTimer: Timer?
+
+    // "Running" means our hook is installed on the provider — there is no timer
+    // to hold any more. Kept separate from the hook itself because the provider
+    // is weak and may already be gone by the time we're torn down.
+    private var isRunning = false
+    private var lastSearchStarted: Date?
 
     // Injectable clock for testability
     var now: () -> Date = { Date() }
@@ -74,7 +99,7 @@ class ContextDetector: ObservableObject {
     // without weather overrides; the app passes the real one.
     init(poiProvider: any POIProviding,
          initialContext: MusicContext = .all,
-         pollInterval: TimeInterval = 10,
+         minimumSearchInterval: TimeInterval = 10,
          dwellDuration: TimeInterval = 30,
          searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
          debtAccumulationDuration: TimeInterval? = nil,
@@ -82,7 +107,7 @@ class ContextDetector: ObservableObject {
          weatherProvider: WeatherProviding?) {
         self.poiProvider = poiProvider
         self.confirmedContext = initialContext
-        self.pollInterval = pollInterval
+        self.minimumSearchInterval = minimumSearchInterval
         self.dwellDuration = dwellDuration
         self.searchRadius = searchRadius
 
@@ -98,17 +123,33 @@ class ContextDetector: ObservableObject {
     }
 
     // MARK: - Lifecycle
+    // Detection hangs off location delivery. This used to be a repeating Timer,
+    // which could never have worked: a scheduled timer does not fire while the
+    // app is suspended, so the state machine froze the moment the screen went
+    // off — which is most of the time the phone is in a pocket, i.e. exactly
+    // when the user is walking somewhere new and the music is supposed to
+    // change. LR-11 taught the OS to keep delivering location in the
+    // background; this makes the delivery itself the trigger, so the thing that
+    // wakes us is the same thing that gives us something new to look at.
     public func start() {
-        guard pollTimer == nil else { return }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
-            self?.poll()
+        guard !isRunning else { return }
+        isRunning = true
+
+        // Weak self: the app owns both of us, and a strong capture here would
+        // pin the detector's lifetime to the provider's.
+        poiProvider?.onLocationUpdate = { [weak self] _ in
+            self?.evaluate()
         }
-        poll() // kick off an immediate first check
+
+        evaluate() // don't sit blind until the next fix arrives
     }
 
     public func stop() {
-        pollTimer?.invalidate()
-        pollTimer = nil
+        guard isRunning else { return }
+        isRunning = false
+        // We're the provider's only consumer, so clearing the slot outright is
+        // honest rather than rude.
+        poiProvider?.onLocationUpdate = nil
     }
 
     // Force an immediate re-detection, bypassing the dwell window.
@@ -116,6 +157,10 @@ class ContextDetector: ObservableObject {
     public func refreshNow() {
         guard let poiProvider = poiProvider,
               poiProvider.currentLocation != nil else { return }
+
+        // Counts against the rate limit like any other search, so a tap
+        // immediately followed by a fix doesn't fire two.
+        lastSearchStarted = now()
 
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
@@ -144,9 +189,18 @@ class ContextDetector: ObservableObject {
     }
 
     // MARK: - Detection
-    private func poll() {
+    // One evaluation pass: look at what's around us, score it, feed the state
+    // machine. Runs on every accepted fix, plus once from start().
+    private func evaluate() {
         guard let poiProvider = poiProvider,
               let location = poiProvider.currentLocation else { return }
+
+        // Rate limit, not a schedule — see minimumSearchInterval. Dropping a
+        // pass is cheap: the next fix brings another one.
+        let evaluatedAt = now()
+        if let lastSearchStarted,
+           evaluatedAt.timeIntervalSince(lastSearchStarted) < minimumSearchInterval { return }
+        lastSearchStarted = evaluatedAt
 
         let speed = currentSpeed()
 
@@ -232,7 +286,7 @@ class ContextDetector: ObservableObject {
 
     // Best-effort current speed in m/s. Prefers the GPS speed reading; when
     // it's unavailable (CLLocation reports -1), falls back to displacement
-    // between polls. nil when speed can't be determined at all.
+    // between evaluations. nil when speed can't be determined at all.
     private func currentSpeed() -> CLLocationSpeed? {
         guard let location = poiProvider?.currentLocation else { return nil }
         defer { lastTickLocation = location }

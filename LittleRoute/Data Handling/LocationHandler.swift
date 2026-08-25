@@ -17,6 +17,11 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     @Published var authorizationStatus: CLAuthorizationStatus?
     @Published var currentLocation: CLLocation?
 
+    // Deliberately not @Published -- it's a callback slot, not view state.
+    // ContextDetector hangs its entire detection pass off this; see the note in
+    // didUpdateLocations for why delivery rather than a clock drives detection.
+    var onLocationUpdate: ((CLLocation) -> Void)?
+
     // Throttling: accept a new location only after this much time has passed
     // since the last accepted update, or when the user has moved farther than
     // the distance threshold. Saves battery and avoids redundant POI churn.
@@ -50,6 +55,17 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
         // and put the blue indicator in the status bar while we do it. we are
         // following you down the street; the least we can do is admit it.
         locationManager.showsBackgroundLocationIndicator = true
+
+        // this one defaults to *true*, and it is load-bearing for detection now.
+        // when iOS decides you've been stationary long enough it pauses updates,
+        // which stops the delegate firing and lets the app suspend -- and it does
+        // not resume on its own. that's the same hole the poll timer had, just
+        // reached by a different road. ContextDetector is driven by delivery, so
+        // a user who has sat down still needs fixes to keep arriving: that is
+        // exactly when a dwell window is supposed to be finishing.
+        // @TODO: LR-24 revisits accuracy/distanceFilter; if this turns out to eat
+        //        battery, the answer is a coarser filter, not re-enabling pausing.
+        locationManager.pausesLocationUpdatesAutomatically = false
     }
     
     // MARK: - Public Methods
@@ -176,6 +192,17 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
         lastAcceptedTime = Date()
 
         currentLocation = location
+
+        // and this is what actually drives context detection. delegate callbacks
+        // arrive on the queue the manager was created on -- main, here -- so the
+        // detector gets a main-thread call and doesn't have to hop.
+        //
+        // note the throttle above has a *time* arm as well as a distance one, so
+        // standing perfectly still still produces a fix every updateInterval.
+        // that matters: the detector's dwell window can only close on an
+        // evaluation, and the user who has stopped walking is precisely the one
+        // whose dwell should be completing.
+        onLocationUpdate?(location)
     }
 
 
