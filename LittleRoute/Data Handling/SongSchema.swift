@@ -23,13 +23,23 @@ import SwiftData
 //    points at the live Song in Song.swift, so editing that file silently
 //    rewrites what that version claims the old store looked like. Before
 //    changing Song, copy today's Song into it as a nested class exactly the way
-//    V1 does, so it stops moving. V2 and V3 have both been through this.
+//    V1 does, so it stops moving. V2, V3 and V4 have all been through this.
+//    Freezing a version also changes what its own stage means: a stage that
+//    lands in the version you just froze has to fetch the transcription rather
+//    than the live class, because the live class is no longer one of that
+//    version's models. Both custom stages below have had that correction made
+//    to them, one version apart.
 // 2. Add the new SongSchemaVn holding the new shape.
 // 3. Add a stage to SongMigrationPlan.stages. .lightweight only covers changes
 //    SwiftData can infer on its own — adding an optional or defaulted
 //    property, dropping a property, dropping an entity. Anything that needs
 //    existing rows rewritten (deduplicating songName, rewriting locations from
-//    display strings to stable keys) has to be a .custom stage.
+//    display strings to stable keys) has to be a .custom stage. Which half of a
+//    .custom stage the work goes in is a real decision and not a habit:
+//    didMigrate for anything that fixes rows up once the new shape is in place,
+//    willMigrate for anything the new shape would otherwise choke on. The V4 →
+//    V5 dedup is the only case of the latter so far, and the comment on it says
+//    why at length.
 // 4. Point sharedModelContainer in LittleRouteApp at the new version.
 //
 // And one rule that isn't a step, because it applies to the stage rather than
@@ -548,8 +558,17 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // lands the user in the in-memory fallback — an empty library and every edit
     // discarded on quit. Leaving the tags un-rewritten is a bad afternoon;
     // throwing is a lost library. Both failure paths log and give up.
+    //
+    // Fetches SongSchemaV4.Song rather than the live Song, and it used to say
+    // Song — the same correction LR-15 made to backfillIsImported, for the same
+    // reason and one version further along. This is a didMigrate, so it has
+    // already arrived: its context speaks V4's models, and the live class stopped
+    // being one of those the moment LR-16 froze V4 and gave it a transcription of
+    // its own. The two shapes are still identical today, so the old spelling
+    // would very likely have gone on working — which is exactly why it is worth
+    // changing now, while it is a rename and not a debugging session.
     private static func rewriteLocationsAsContextKeys(in context: ModelContext) {
-        guard let songs = try? context.fetch(FetchDescriptor<Song>()) else {
+        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
             print("context key migration: could not read the migrated songs, leaving every tag in its old spelling")
             return
         }
