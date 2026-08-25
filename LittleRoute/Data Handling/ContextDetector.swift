@@ -81,6 +81,12 @@ class ContextDetector: ObservableObject {
     private let weatherProvider: WeatherProviding?
 
     // MARK: - State
+    // The only signal a context switch travels on. There used to be an
+    // onContextChange closure alongside it, and the trouble with a closure is
+    // that somebody has to keep it fresh: ContentView's captured `songs`, so
+    // every import made the capture stale and the view had to remember to
+    // re-assign it. Publishing is enough — an observer reads whatever it needs
+    // at the moment the change lands, and there is no second place to update.
     @Published private(set) var confirmedContext: MusicContext
     @Published private(set) var zones: [ContextClassifier.Zone] = []
     @Published private(set) var contextScores: [MusicContext: Double] = [:]
@@ -95,9 +101,6 @@ class ContextDetector: ObservableObject {
     private(set) var bufferExpiry: Date?
     private var lastDebtTick: Date?
     private var lastTickLocation: CLLocation?
-
-    // Fired on the main thread whenever a new context is confirmed
-    var onContextChange: ((MusicContext) -> Void)?
 
     // Weak because the app scope owns the provider and we only borrow it.
     // POIProviding is AnyObject-bound precisely so this can stay weak — a
@@ -219,10 +222,15 @@ class ContextDetector: ObservableObject {
                 self.candidateContext = nil
                 self.candidateSince = nil
                 self.clearBuffer() // an explicit user request overrides the anti-flap buffer
+
+                // Same answer as last time, so there is nothing to announce.
+                // The early return earns its keep now that the publish is the
+                // whole signal: @Published fires on every assignment, equal or
+                // not, so writing the same context back would invalidate every
+                // observing view to say nothing.
                 guard observed != self.confirmedContext else { return }
                 self.confirmedContext = observed
                 print("ContextDetector: manual refresh switched context to \(observed.rawValue)")
-                self.onContextChange?(observed)
             }
         }
     }
@@ -441,11 +449,13 @@ class ContextDetector: ObservableObject {
                 bufferedContext = confirmedContext
                 bufferExpiry = now().addingTimeInterval(switchBufferDuration)
             }
+            // Only ever reached on a genuine change — the equality check at the
+            // top of this function already returned for anything else — so the
+            // publish that follows is always meaningful.
             confirmedContext = observedContext
             candidateContext = nil
             candidateSince = nil
             print("ContextDetector: switched context to \(observedContext.rawValue)")
-            onContextChange?(observedContext)
         }
     }
 }

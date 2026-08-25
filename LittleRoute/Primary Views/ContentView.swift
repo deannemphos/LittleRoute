@@ -153,10 +153,13 @@ struct ContentView: View {
                 audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
             }
 
-            // Switch music automatically when the user dwells in a new area
-            contextDetector.onContextChange = { newContext in
-                audioManager.switchContext(to: newContext, songs: songs)
-            }
+            // The reloadQueue above is also what applies the *launch* context,
+            // which matters because the onChange below deliberately never fires
+            // for an initial value. It works because the two agree at startup:
+            // AudioPlayerManager.currentContext and ContextDetector's
+            // initialContext are both .all. Anything that seeds the detector
+            // from disk (LR-13) breaks that pairing and has to hand the
+            // restored context to reloadQueue here instead.
             contextDetector.start()
             // Auto-start playback on launch, unless the user is already listening
             // to something else — see startPlaybackIfNothingElseIsPlaying
@@ -164,10 +167,23 @@ struct ContentView: View {
         }
         .onChange(of: songs) { oldValue, newValue in
             audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: newValue)
-            // Re-capture the latest song list for future context switches
-            contextDetector.onContextChange = { newContext in
-                audioManager.switchContext(to: newContext, songs: newValue)
-            }
+        }
+        // Switch music automatically when the user dwells in a new area.
+        //
+        // This used to be a closure handed to the detector in onAppear, which
+        // captured `songs` and therefore went stale the instant anything was
+        // imported — so the onChange above had to re-assign it by hand, and the
+        // app was one forgotten line away from picking a new context's music
+        // out of a song list that predated the user's library. Reading `songs`
+        // here instead means it is whatever SwiftUI last handed this view, as
+        // of the moment the context actually changed. Nothing to keep in sync.
+        //
+        // onChange won't fire for the value the detector starts on; see the
+        // note by reloadQueue in onAppear for who covers launch. It also only
+        // fires on a real change, and switchContext guards a no-op switch on
+        // its own side, so the crossfade can't be triggered by standing still.
+        .onChange(of: contextDetector.confirmedContext) { _, newContext in
+            audioManager.switchContext(to: newContext, songs: songs)
         }
     }
 
