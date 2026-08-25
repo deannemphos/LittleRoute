@@ -251,6 +251,9 @@ struct ContextClassifierTests {
 // no MKLocalSearch. The detector only ever asks for these two things.
 private final class StubPOIProvider: POIProviding {
     var currentLocation: CLLocation?
+    // the detector installs its evaluation hook here in start(); a real handler
+    // would call it from didUpdateLocations
+    var onLocationUpdate: ((CLLocation) -> Void)?
     // what the next search hands back -- nothing here touches MapKit
     var searchResult: Result<[MKMapItem], Error> = .success([])
 
@@ -283,6 +286,46 @@ struct ContextDetectorTests {
         let advance: (TimeInterval) -> Void = { currentTime = currentTime.addingTimeInterval($0) }
         return (detector, advance)
     }
+
+    // MARK: Lifecycle
+    //
+    // These cover the wiring that replaced the poll timer. They can't prove
+    // anything about background behaviour -- that needs a locked device -- but
+    // they do pin down that "running" means "subscribed to location delivery",
+    // which is the part that used to be a Timer.
+
+    @Test func startSubscribesToLocationDeliveryAndStopUnsubscribes() {
+        let (detector, _) = makeDetector()
+        #expect(poiProvider.onLocationUpdate == nil)
+
+        detector.start()
+        #expect(poiProvider.onLocationUpdate != nil)
+
+        detector.stop()
+        #expect(poiProvider.onLocationUpdate == nil)
+    }
+
+    @Test func stopBeforeStartIsHarmless() {
+        let (detector, _) = makeDetector()
+        detector.stop()
+        #expect(poiProvider.onLocationUpdate == nil)
+
+        // and a start still takes effect afterwards
+        detector.start()
+        #expect(poiProvider.onLocationUpdate != nil)
+    }
+
+    @Test func repeatedStartsKeepASingleSubscription() {
+        let (detector, _) = makeDetector()
+        detector.start()
+        detector.start()
+        // one stop is enough to leave nothing behind -- the second start was a
+        // no-op rather than a second subscription
+        detector.stop()
+        #expect(poiProvider.onLocationUpdate == nil)
+    }
+
+    // MARK: Dwell
 
     @Test func sameContextObservationDoesNotSwitch() {
         let (detector, advance) = makeDetector(initial: .beach)

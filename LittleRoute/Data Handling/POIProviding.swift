@@ -18,6 +18,13 @@ protocol POIProviding: AnyObject {
     // Latest accepted fix, or nil until the first one lands.
     var currentLocation: CLLocation? { get }
 
+    // Fired whenever the provider accepts a new fix. This is the detector's
+    // clock: one evaluation pass per delivered location, instead of a Timer
+    // that stops firing the moment the app is suspended. A single slot rather
+    // than a broadcast because there is exactly one consumer — the detector
+    // installs it in start() and clears it in stop().
+    var onLocationUpdate: ((CLLocation) -> Void)? { get set }
+
     // Results arrive through the completion handler only -- nothing gets stashed
     // on the provider. Completion lands on whatever queue the search finished
     // on, so callers hop to main themselves.
