@@ -10,6 +10,7 @@ import AVFoundation
 import MediaPlayer
 import SwiftUI
 import Observation
+import os
 import _SwiftData_SwiftUI
 
 // Everything on this class expects to be called from the main thread. It writes
@@ -143,7 +144,13 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         } catch {
-            print("Failed to configure audio session: \(error)")
+            // All three AVAudioSession failures in this file are .error, including
+            // the deactivation one below that costs us nothing directly: each of
+            // them is the session refusing a request, and each has a consequence
+            // the user hears — no category means playback may never be allowed,
+            // no activation means silence, and no deactivation means whatever we
+            // interrupted never comes back.
+            Log.playback.error("Failed to configure audio session: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -164,7 +171,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             hasActivatedSession = true
             return true
         } catch {
-            print("Failed to activate audio session: \(error)")
+            Log.playback.error("Failed to activate audio session: \(String(describing: error), privacy: .public)")
             return false
         }
     }
@@ -193,7 +200,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
-            print("Failed to deactivate audio session: \(error)")
+            Log.playback.error("Failed to deactivate audio session: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -291,7 +298,13 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         isPaused = true
         stopPlaybackTimer()
         updateNowPlayingInfo()
-        print("Playback paused: \(reason)")
+        // .info: nothing has gone wrong — a call arrived, or the headphones came
+        // out, and we did the right thing. But it is the explanation for a
+        // silence the user noticed, so it should still be there tomorrow when
+        // they ask about it. The reason is one of two literals from this file's
+        // own call sites, so marking it .public discloses nothing and is the
+        // difference between this line saying something and saying nothing.
+        Log.playback.info("Playback paused: \(reason, privacy: .public)")
     }
 
     private func resumeAfterInterruption() {
@@ -300,7 +313,11 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             // there's nothing loaded any more. Stay paused rather than pretend.
             isPaused = true
             updateNowPlayingInfo()
-            print("Interruption ended, but there is no loaded song to resume")
+            // .notice rather than .error: staying paused is the correct answer to
+            // a queue that emptied during the call, not a fault. It is still the
+            // record of music that a user expected back and did not get, which
+            // is why it outranks the .info on the happy path below.
+            Log.playback.notice("Interruption ended, but there is no loaded song to resume")
             return
         }
 
@@ -309,7 +326,11 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         // every other entry into playback — this is not a special case, it just happens
         // to be the one where we know for certain the session is gone.
         guard activateSession() else {
-            print("Interruption ended, but the audio session would not come back")
+            // .error, unlike its neighbour above: here we asked for the session
+            // and were refused, so the music stops for a reason outside the
+            // app's own bookkeeping. activateSession has already logged the
+            // underlying failure; this line says what it cost.
+            Log.playback.error("Interruption ended, but the audio session would not come back")
             isPaused = true
             updateNowPlayingInfo()
             return
@@ -319,7 +340,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         isPaused = false
         startPlaybackTimer()
         updateNowPlayingInfo()
-        print("Interruption ended, resuming playback")
+        Log.playback.info("Interruption ended, resuming playback")
     }
 
     // Lock screen / Control Center playback controls.
@@ -388,7 +409,15 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     // Load songs from the Music folder in the app bundle
     public func loadSongsFromBundle(modelContext: ModelContext) -> [Song] {
         guard let musicPath = Bundle.main.resourcePath?.appending("/Music") else {
-            print("Music folder not found")
+            // Log.library rather than Log.playback, and everything from here to
+            // the end of importSongs goes with it. These lines fail against the
+            // filesystem and SwiftData at import time; the transport lines fail
+            // against AVAudioSession in real time. See Logging.swift.
+            //
+            // .error because there is no legitimate way to reach this: the Music
+            // folder is a bundle resource, so its absence is a packaging fault
+            // that shipped, not a state the user can get into.
+            Log.library.error("Music folder not found")
             return []
         }
         
@@ -443,9 +472,9 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             }
             
             try? modelContext.save()
-            print("Loaded \(mp3Files.count) songs from Music folder")
+            Log.library.info("Loaded \(mp3Files.count) songs from Music folder")
         } catch {
-            print("Error loading songs: \(error)")
+            Log.library.error("Error loading songs: \(String(describing: error), privacy: .public)")
         }
         
         return loadedSongs
@@ -508,7 +537,12 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
                         try Self.coordinatedCopy(from: url, to: destination)
                     }.value
                 } catch {
-                    print("Failed to copy imported song '\(songName)': \(error)")
+                    // Song identity is .public here and at every other import
+                    // site. The user picked these files a second ago and is
+                    // about to ask why one of them didn't arrive; "Failed to
+                    // copy imported song '<private>'" cannot answer that. The
+                    // policy and what it discloses are set out in Logging.swift.
+                    Log.library.error("Failed to copy imported song '\(songName, privacy: .public)': \(String(describing: error), privacy: .public)")
                     continue
                 }
             }
@@ -523,11 +557,17 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
                 // and the migration's backfill found no file to match it against.
                 // Guarded rather than assigned, so an ordinary re-import doesn't
                 // dirty a row that already says the right thing.
+                // Both arms are .info, deliberately the same level even though
+                // the second one is the more interesting of the two — it repairs
+                // a row that was wrong. Splitting them would mean a filter that
+                // shows one arm hides the other, and the only reason to read
+                // either line is to find out which arm a particular import took.
+                // A branch you are trying to understand has to be visible whole.
                 if existing.isImported {
-                    print("Song already exists, skipping record: \(songName)")
+                    Log.library.info("Song already exists, skipping record: \(songName, privacy: .public)")
                 } else {
                     existing.isImported = true
-                    print("Song already exists, marking the existing record imported: \(songName)")
+                    Log.library.info("Song already exists, marking the existing record imported: \(songName, privacy: .public)")
                 }
                 continue
             }
@@ -556,13 +596,15 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             // will say: Song.init normalizes the name it is given, and a URL like
             // "track.mp3.mp3" leaves the two disagreeing.
             songsByName[newSong.songName] = newSong
-            print("Imported song: \(title)")
+            Log.library.info("Imported song: \(title, privacy: .public)")
         }
 
         do {
             try modelContext.save()
         } catch {
-            print("Failed to save imported songs: \(error)")
+            // The save is what makes every insert above real, so this one line
+            // failing silently loses the entire batch the user just picked.
+            Log.library.error("Failed to save imported songs: \(String(describing: error), privacy: .public)")
         }
 
         // Refresh the queue so new songs are playable immediately
@@ -632,7 +674,10 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         guard !songQueue.isEmpty else { return }
 
         guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else {
-            print("Something else is playing — starting paused rather than interrupting it")
+            // .info: the deliberate, polite outcome, and the answer to "I opened
+            // the app and it didn't play" — which looks exactly like a bug from
+            // the outside and is the opposite of one.
+            Log.playback.info("Something else is playing — starting paused rather than interrupting it")
             return
         }
 
@@ -669,7 +714,14 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         }
         
         updateNowPlayingInfo()
-        print("Audio Player is now \(isPaused ? "paused" : "playing")")
+        // .debug, and it is the clearest case of it in the file: one line per tap
+        // of the play button, saying something the UI is already showing. It
+        // earns its keep only when someone has turned the category up to watch a
+        // sequence of transport calls go past. The ternary produces a String, so
+        // it needs .public or the line degrades to "Audio Player is now
+        // <private>", which is the worst of both worlds — the noise without the
+        // content.
+        Log.playback.debug("Audio Player is now \(isPaused ? "paused" : "playing", privacy: .public)")
     }
     
     // Start whatever loadAudio just prepared. skip / previous / play(song:) all do the
@@ -691,7 +743,10 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     public func skip() {
         guard !songQueue.isEmpty else {
-            print("No songs in queue")
+            // .debug here and in previous(). An empty queue is already announced
+            // at .notice by reloadQueue, which is where it actually became empty;
+            // these two only record that somebody pressed a button afterwards.
+            Log.playback.debug("No songs in queue")
             return
         }
         
@@ -719,7 +774,13 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     // been made correct.
     public func play(song: Song) {
         guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else {
-            print("Song not in queue: \(song.songName)")
+            // .notice, which is a genuine judgement call. It is not an error —
+            // the queue can legitimately have been rebuilt between the row being
+            // drawn and the row being tapped — but the user pressed a specific
+            // song and got nothing, and unlike the guards in skip() and
+            // previous() this one names which song it was. That name is what
+            // makes the line worth keeping, hence .public.
+            Log.playback.notice("Song not in queue: \(song.songName, privacy: .public)")
             return
         }
 
@@ -731,7 +792,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     public func previous() {
         guard !songQueue.isEmpty else {
-            print("No songs in queue")
+            Log.playback.debug("No songs in queue")
             return
         }
         
@@ -787,7 +848,12 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     private func loadAudio(fileName: String) {
         
         guard let url = Self.url(forSongFile: fileName) else {
-            print("Could not find file: \(fileName).mp3")
+            // .error, and the single most important line in the file. A row in
+            // the store names a file that is not on disk, which is the exact
+            // shape of the "it says it's playing and there's no sound" bug. The
+            // filename is the whole diagnostic — it is what you go and look for
+            // in Documents/Music — so it is .public.
+            Log.playback.error("Could not find file: \(fileName, privacy: .public).mp3")
             return
         }
         
@@ -798,7 +864,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             songLength = audioPlayer?.duration ?? 0.0
             currentTime = 0.0
         } catch {
-            print("Could not create audio player: \(error)")
+            Log.playback.error("Could not create audio player: \(String(describing: error), privacy: .public)")
         }
     }
     
@@ -813,7 +879,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         guard flag else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            print("Song finished, playing next song")
+            Log.playback.debug("Song finished, playing next song")
             self.skip()
         }
     }
@@ -921,7 +987,13 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         // down instead of leaving a stale currentSong playing a track the queue no
         // longer contains — otherwise the UI reports a song that isn't in the drawer.
         guard !songQueue.isEmpty else {
-            print("No songs matched the current context")
+            // .notice, and the only one among the queue lines. Everything else
+            // in reloadQueue is bookkeeping; this branch tears the player down
+            // and hands the audio session back, so it is the moment the app goes
+            // deliberately silent. Correct behaviour, and the thing a user will
+            // report as the app breaking — which is precisely the combination
+            // that has to survive to the log.
+            Log.playback.notice("No songs matched the current context")
             currentIndex = 0
             currentSong = nil
             stopPlaybackTimer()
@@ -951,7 +1023,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
            let playing = currentSong,
            let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) {
             currentIndex = index
-            print("Queue reloaded with \(songQueue.count) songs, still playing \(playing.songName)")
+            Log.playback.debug("Queue reloaded with \(songQueue.count) songs, still playing \(playing.songName, privacy: .public)")
             return
         }
 
@@ -959,7 +1031,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         currentIndex = 0
         currentSong = songQueue[currentIndex]
         loadAudio(fileName: songQueue[currentIndex].songName)
-        print("Queue loaded with \(songQueue.count) songs")
+        Log.playback.debug("Queue loaded with \(songQueue.count) songs")
     }
     
     // Timer management for playback progress.
