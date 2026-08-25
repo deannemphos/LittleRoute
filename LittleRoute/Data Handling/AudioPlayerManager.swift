@@ -450,6 +450,29 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
 
     // MARK: Audio Playback Functions
+    // Start playing on launch, but only if the user isn't already listening to
+    // something else.
+    //
+    // Opening LittleRoute used to stop whatever was playing — a podcast, another
+    // music app — because .onAppear called musicPlayPause() unconditionally, and
+    // taking the session is what silences the other app. Making activation lazy
+    // (see activateSession) didn't help on its own, since we asked for playback a
+    // frame after launch anyway.
+    //
+    // isOtherAudioPlaying answers "is someone else making noise right now", which
+    // is exactly the question. If they are, we stay quiet and wait to be asked.
+    public func startPlaybackIfNothingElseIsPlaying() {
+        guard !songQueue.isEmpty else { return }
+
+        guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else {
+            print("Something else is playing — starting paused rather than interrupting it")
+            return
+        }
+
+        guard isPaused || audioPlayer == nil else { return } // already going, nothing to do
+        musicPlayPause()
+    }
+
     // Play the music if not paused, pause the music if paused. ezpz
     public func musicPlayPause() {
         // If no audio is loaded and we have songs in queue, load the first one
