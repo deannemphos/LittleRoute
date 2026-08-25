@@ -8,6 +8,45 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Store health
+//
+// Which of the two stores the app actually ended up on. This is decided once,
+// before any view exists, and nothing re-opens the store afterwards — so it's
+// a plain value handed down the environment rather than an observable object.
+//
+// It exists because the in-memory fallback below is *not* a silent equivalent
+// of the real thing: on it the library reads as empty and every edit or import
+// is thrown away on quit. Something has to be able to tell the user that, or
+// they'll re-import their whole library into a store that forgets it.
+enum ModelStoreHealth {
+
+    // the on-disk store opened normally. edits survive a quit.
+    case onDisk
+
+    // the on-disk store refused to open, so we're running in memory. reason is
+    // the underlying error's description — diagnostic text for a bug report or
+    // a log, not user-facing copy.
+    case inMemory(reason: String)
+
+    var isDegraded: Bool {
+        if case .inMemory = self { return true }
+        return false
+    }
+}
+
+private struct ModelStoreHealthKey: EnvironmentKey {
+    // a view with nothing injected above it (a preview, say) should assume the
+    // normal case rather than warn about a problem that isn't there.
+    static let defaultValue: ModelStoreHealth = .onDisk
+}
+
+extension EnvironmentValues {
+    var modelStoreHealth: ModelStoreHealth {
+        get { self[ModelStoreHealthKey.self] }
+        set { self[ModelStoreHealthKey.self] = newValue }
+    }
+}
+
 @main
 struct LittleRouteApp: App {
 
@@ -31,24 +70,17 @@ struct LittleRouteApp: App {
     // dropped by the V1 → V2 stage rather than by quietly disappearing from
     // the list. See SongSchema.swift.
     //
-    // @TODO: this still fatalErrors, and attaching a migration plan makes that
-    // more likely to fire rather than less — a migration that throws is now
-    // one of the ways container creation can fail, and the user's only
-    // recovery is deleting the app. That's LR-10, not this change.
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema(versionedSchema: SongSchemaV2.self)
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema,
-                                      migrationPlan: SongMigrationPlan.self,
-                                      configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    // Both of these are decided together in makeModelContainer(), which is why
+    // they're assigned in init() rather than each carrying its own initialiser
+    // closure.
+    let sharedModelContainer: ModelContainer
+    let storeHealth: ModelStoreHealth
 
     init() {
+        let (container, health) = Self.makeModelContainer()
+        sharedModelContainer = container
+        storeHealth = health
+
         // The detector needs the handler, so they're built together here and
         // seeded into @State rather than declared with inline defaults.
         //
@@ -60,6 +92,57 @@ struct LittleRouteApp: App {
         _locationHandler = State(initialValue: handler)
         _contextDetector = State(initialValue: ContextDetector(poiProvider: handler,
                                                                weatherProvider: WeatherKitProvider()))
+    }
+
+    // MARK: - Container construction
+    //
+    // This used to fatalError, which meant a corrupt store, a full disk or a
+    // migration that threw was an unrecoverable launch crash whose only user-
+    // side fix was deleting the app — which deletes the library it was trying
+    // to protect. Attaching a migration plan (SongMigrationPlan) added a fresh
+    // way to throw here, so the crash got *more* likely, not less.
+    //
+    // Falling back to memory is a genuine trade, not a free win. The app
+    // launches, but the library looks empty and nothing written survives the
+    // quit. That is only better than crashing if the user is told, hence
+    // storeHealth — see the @TODO on body.
+    //
+    // Note what this deliberately does NOT do: it doesn't delete or move the
+    // failed store. Those bytes are the user's library, and a store today's
+    // migration can't open may still be readable by a later build or by a
+    // repair path we haven't written yet. Wiping it to get a clean launch
+    // would be the app doing the exact thing we're trying to spare the user
+    // from having to do by hand.
+    private static func makeModelContainer() -> (ModelContainer, ModelStoreHealth) {
+        let schema = Schema(versionedSchema: SongSchemaV2.self)
+
+        do {
+            let onDisk = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            let container = try ModelContainer(for: schema,
+                                               migrationPlan: SongMigrationPlan.self,
+                                               configurations: [onDisk])
+            return (container, .onDisk)
+        } catch {
+            print("Could not open the on-disk model store, falling back to memory: \(error)")
+
+            do {
+                // no migration plan on this one. An in-memory store is created
+                // empty on every launch, so there is never anything to migrate
+                // — running the plan here would only re-introduce the failure
+                // mode we're recovering from.
+                let inMemory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+                let container = try ModelContainer(for: schema, configurations: [inMemory])
+                return (container, .inMemory(reason: String(describing: error)))
+            } catch {
+                // Deliberately still fatal. An empty in-memory container needs
+                // no file, no disk space and no migration — if the schema
+                // itself can't be realised then every screen is a @Query over
+                // models that don't exist, and there is no degraded mode left
+                // to fall back to. Crashing here is honest; limping isn't an
+                // option.
+                fatalError("Could not create an in-memory ModelContainer either: \(error)")
+            }
+        }
     }
 
     var body: some Scene {
@@ -74,6 +157,15 @@ struct LittleRouteApp: App {
                 // the @Observable migration (LR-19).
                 .environmentObject(locationHandler)
                 .environmentObject(contextDetector)
+                // @TODO: nothing reads this yet, and that's the unfinished
+                // half of LR-10 — a degraded launch currently looks exactly
+                // like a first launch with an empty library, which is the
+                // dangerous part. Surface it in ContentView as a persistent
+                // banner (not a dismissible alert; the condition lasts the
+                // whole session) saying the library couldn't be opened and
+                // that changes won't be saved. That's a view change in
+                // LR-30b's files, so it isn't done here.
+                .environment(\.modelStoreHealth, storeHealth)
         }
         .modelContainer(sharedModelContainer)
     }
