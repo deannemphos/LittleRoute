@@ -36,17 +36,18 @@ struct ContextClassifier {
     }
 
     // Above this speed the user is unambiguously in a vehicle — classify as
-    // traveling no matter what POIs are nearby. 35 mph, expressed in m/s.
+    // traveling no matter what POIs are nearby, and no matter what the sky is
+    // doing. 35 mph, expressed in m/s.
     static let travelingSpeedThreshold: CLLocationSpeed = 35 * 0.44704
 
-    // Hard overrides that trump POI scoring entirely.
-    // Rain/snow beats everything (including speed); high speed beats POIs.
+    // The one remaining hard override, and it is now the top of the pile.
+    //
+    // Weather used to sit above this and win outright, which meant someone
+    // doing 60mph through a shower got rain music — but they are in a car, not
+    // in a rainstorm, and the windscreen is the whole point. Speed describes
+    // where the user's body is; weather only describes the sky over it. So
+    // speed goes first, and weather scores instead (see the Weather section).
     static func contextOverride(for factors: Factors) -> MusicContext? {
-        switch factors.weather {
-        case .rainy: return .rainy
-        case .snowy: return .snowy
-        case .clear, nil: break
-        }
         if let speed = factors.speed, speed > travelingSpeedThreshold {
             return .traveling
         }
@@ -55,9 +56,14 @@ struct ContextClassifier {
 
     struct Evaluation {
         let context: MusicContext?
-        // What would have won on proximity × specificity alone. When this differs
-        // from `context`, accumulated debt changed the outcome — ContextDetector
-        // uses that signal to arm the anti-flapping switch buffer.
+        // What would have won on proximity × specificity × weather alone. When
+        // this differs from `context`, accumulated debt changed the outcome —
+        // ContextDetector uses that signal to arm the anti-flapping switch
+        // buffer. Weather is deliberately on both sides of that comparison: it
+        // is a fact about the world, like specificity, whereas debt is a fact
+        // about how long we have been sitting in one context. Fold weather into
+        // only one side and the two views would disagree every time it rained,
+        // which would arm the buffer on switches debt had nothing to do with.
         let contextIgnoringDebt: MusicContext?
         var factors: [Factors]? = nil
         let scores: [MusicContext: Double]
@@ -74,6 +80,80 @@ struct ContextClassifier {
         1.0 - min(max(debt, 0), maxDebt)
     }
 
+    // MARK: - Weather tuning
+    //
+    // Weather is a second axis, not a winner-take-all. It used to be a hard
+    // override — any rain at all returned .rainy, ahead of speed and ahead of
+    // every POI — so walking into a gym in a shower got you rain music, and a
+    // restaurant in a snowstorm may as well not have existed. It now does two
+    // things to the scoreboard instead, both applied before debt.
+
+    // First: what the weather is worth on its own.
+    //
+    // A flat number, because weather is not a place. .rainy and .snowy have no
+    // entry in `profiles`, so there is no effectiveRadius to measure a
+    // proximity against and no specificity to weight one by — the sky is simply
+    // true everywhere at once, and this constant stands in for the whole
+    // proximity × specificity product a POI would have earned.
+    //
+    // 0.5 is picked against the profile table. The least specific context there
+    // is the restaurant at 0.70, so standing in the door of the least
+    // distinctive place we recognise still beats the rain, while merely passing
+    // within sight of one (proximity below ~0.71, i.e. more than ~20m out on a
+    // 70m radius) does not. That is the case this feature actually exists for:
+    // an unremarkable street in the rain, where nothing else has a strong
+    // claim, so the weather wins by default rather than by fiat.
+    static let weatherScore: Double = 0.5
+
+    // Second: what the weather takes away from the places it spoils. An empty
+    // beach in a downpour is a rainy day first and a beach second.
+    //
+    // 0.6 is a slightly gentler cut than a full debt balance (which halves a
+    // score), and like debt it can never zero a context out — stand in the
+    // middle of a park and the park still wins. At 0.6 the beach's 1.30 tops
+    // out at 0.78, so it has to be within ~215m of the pin to clear
+    // weatherScore where undamped it would have needed only ~370m.
+    static let outdoorWeatherMultiplier: Double = 0.6
+
+    // Only the unambiguously open-air contexts. .city is left alone on purpose:
+    // its categories are overwhelmingly indoor venues — museums, theatres,
+    // transit halls, hotels — so it is not a context the rain spoils.
+    static let outdoorContexts: Set<MusicContext> = [.beach, .park]
+
+    // The context the sky is making a claim for, if any.
+    static func weatherContext(for condition: Factors.Condition?) -> MusicContext? {
+        switch condition {
+        case .rainy: return .rainy
+        case .snowy: return .snowy
+        case .clear, nil: return nil
+        }
+    }
+
+    // Mirrors debtMultiplier: what to scale a context's score by given the
+    // conditions. 1.0 in fair weather, and 1.0 for anything with a roof.
+    static func weatherMultiplier(for context: MusicContext, in condition: Factors.Condition?) -> Double {
+        guard weatherContext(for: condition) != nil else { return 1.0 }
+        return outdoorContexts.contains(context) ? outdoorWeatherMultiplier : 1.0
+    }
+
+    // Folds the weather into a set of POI scores: damp what the weather spoils,
+    // then let the weather itself stand on the board as one more candidate.
+    // Returns the scores untouched in fair weather, so the common path is free.
+    private static func applyWeather(to scores: [MusicContext: Double],
+                                     condition: Factors.Condition?) -> [MusicContext: Double] {
+        guard let weather = weatherContext(for: condition) else { return scores }
+
+        var adjusted: [MusicContext: Double] = [:]
+        for (context, score) in scores {
+            adjusted[context] = score * weatherMultiplier(for: context, in: condition)
+        }
+        // Assigned rather than accumulated: weather is one condition, not a
+        // cluster of POIs, so a second reading of it adds no evidence.
+        adjusted[weather] = weatherScore
+        return adjusted
+    }
+
+    // MARK: - Profiles
 
     // Larger, less common places influence a wider area. Common, compact places
     // need the user to be closer before they outweigh their surroundings.
@@ -146,17 +226,29 @@ struct ContextClassifier {
     }
 
     // `debts` carries the runtime debt level (0...maxDebt) per context, managed
-    // by ContextDetector. Scores are proximity × specificity × debt multiplier.
-    // `factors` (weather/speed) can hard-override the POI winner entirely.
+    // by ContextDetector. Scores are proximity × specificity × weather
+    // multiplier × debt multiplier, with the weather itself scoring alongside
+    // them. `factors.speed` is the only thing that can still override the
+    // winner outright.
     static func evaluate(places: [MKMapItem],
                          userLocation: CLLocation?,
                          debts: [MusicContext: Double] = [:],
                          factors: Factors? = nil) -> Evaluation {
         let override = factors.flatMap { contextOverride(for: $0) }
 
+        // Above the speed threshold the weather doesn't get a vote either: the
+        // user is inside a vehicle looking out at it. ContextDetector already
+        // stops *fetching* conditions up there, but it keeps the last reading
+        // around, so drop it here rather than trusting it to be nil.
+        let condition: Factors.Condition? = override == nil ? factors?.weather : nil
+
         guard let userLocation else {
-            return Evaluation(context: override, contextIgnoringDebt: override,
-                              factors: factors.map { [$0] }, scores: [:], zones: [])
+            // Nothing to score without a fix, so the sky is the only claim left
+            // on the table.
+            let scores = applyWeather(to: [:], condition: condition)
+            let observed = override ?? winner(of: scores)
+            return Evaluation(context: observed, contextIgnoringDebt: observed,
+                              factors: factors.map { [$0] }, scores: scores, zones: [])
         }
 
         var contributions: [MusicContext: [Double]] = [:]
@@ -190,24 +282,37 @@ struct ContextClassifier {
         // The strongest POI defines most of a context's score. Additional nearby
         // POIs add limited evidence so dense restaurant/store clusters do not win
         // solely because those categories are more common in MapKit.
-        let rawScores = contributions.mapValues { values in
+        let poiScores = contributions.mapValues { values in
             let sorted = values.sorted(by: >)
             return sorted.enumerated().reduce(0) { total, entry in
                 total + entry.element * pow(0.25, Double(entry.offset))
             }
         }
 
+        // Weather joins the scoring here rather than replacing its result:
+        // it damps the contexts it spoils and then competes for the win. Sits
+        // ahead of debt so that both views below see the same weather — see
+        // Evaluation.contextIgnoringDebt for why that matters.
+        let rawScores = applyWeather(to: poiScores, condition: condition)
+
         // Debt discounts a context that has been active for a while, giving
         // less common neighbors a fair shake — but only contexts that are
         // physically present can win, so debt can never switch on its own.
+        //
+        // .rainy and .snowy fall through this like anything else. They have no
+        // profile, so the `?? 0` gives them no baseline debt, but ContextDetector
+        // accrues runtime debt against whatever is confirmed while the user
+        // moves — so an hour of walking in the rain lets a nearby POI take the
+        // context back, exactly as an hour of restaurants would.
         let scores = Dictionary(uniqueKeysWithValues: rawScores.map { (context, score) in
             let debt = (debts[context] ?? 0) + (profile(for: context)?.debt ?? 0)
             return (context, score * debtMultiplier(for: debt))
         })
 
-        // Zones and scores are still computed under an override so the map can
-        // keep showing nearby context areas — the override only decides the
-        // winner.
+        // Zones are the POIs themselves, so the weather never appears among
+        // them and their scores stay unweathered — a zone describes the place,
+        // not today. They're computed under the speed override too, so the map
+        // can keep drawing the areas around a moving user.
         return Evaluation(
             context: override ?? winner(of: scores),
             contextIgnoringDebt: override ?? winner(of: rawScores),

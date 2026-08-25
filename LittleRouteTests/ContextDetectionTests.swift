@@ -179,23 +179,196 @@ struct ContextClassifierTests {
         #expect(evaluation.zones[0].id != evaluation.zones[1].id)
     }
 
-    // MARK: External factors
+    // MARK: External factors — weather
+    //
+    // Weather used to be a hard override: any rain at all returned .rainy ahead
+    // of speed and ahead of every POI. It now scores instead, so these read as
+    // "how strong a claim does the place have?" rather than "is it raining?".
 
-    @Test func rainOverridesPOIsAndSpeed() {
+    // The spec's first case: an indoor context with a strong POI score survives
+    // rain. Standing in the gym doorway, 10m from the pin on a 120m radius,
+    // scores 0.96 — comfortably past the weather's flat 0.5.
+    @Test func strongIndoorPOISurvivesRain() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let gym = mapItem(category: .fitnessCenter, metersEast: 10)
+        let factors = ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+
+        let evaluation = ContextClassifier.evaluate(places: [gym], userLocation: user, factors: factors)
+
+        #expect(evaluation.context == .gym)
+        #expect(evaluation.contextIgnoringDebt == .gym)
+        // the rain is still on the board, just outscored
+        #expect(evaluation.scores[.rainy, default: 0] == ContextClassifier.weatherScore)
+    }
+
+    // The same for the least specific context we recognise: sitting in a
+    // restaurant in a snowstorm, the restaurant still exists.
+    @Test func sittingInARestaurantSurvivesSnow() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 5)
+        let factors = ContextClassifier.Factors(weather: .snowy, speed: 0)
+
+        let evaluation = ContextClassifier.evaluate(places: [restaurant], userLocation: user, factors: factors)
+        #expect(evaluation.context == .restaurant)
+    }
+
+    // The spec's second case, and what the feature is actually for: nothing
+    // around with a real claim, so the weather takes it.
+    @Test func openGroundInRainSelectsRainy() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let factors = ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+
+        let evaluation = ContextClassifier.evaluate(places: [], userLocation: user, factors: factors)
+
+        #expect(evaluation.context == .rainy)
+        #expect(evaluation.contextIgnoringDebt == .rainy)
+        #expect(evaluation.zones.isEmpty) // weather is not a place, so it draws no zone
+    }
+
+    @Test func openGroundInSnowSelectsSnowy() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let evaluation = ContextClassifier.evaluate(
+            places: [],
+            userLocation: user,
+            factors: ContextClassifier.Factors(weather: .snowy, speed: 1.5)
+        )
+        #expect(evaluation.context == .snowy)
+    }
+
+    // Between the two: a restaurant 50m away on a 70m radius scores 0.20, which
+    // is a place you are walking past rather than one you are in.
+    @Test func weaklyClaimedGroundLosesToRain() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 50)
+        let factors = ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+
+        let evaluation = ContextClassifier.evaluate(places: [restaurant], userLocation: user, factors: factors)
+
+        #expect(evaluation.context == .rainy)
+        // the restaurant is still scored and still drawn — it just lost
+        #expect(evaluation.scores[.restaurant, default: 0] > 0)
+        #expect(evaluation.zones.count == 1)
+    }
+
+    // Damping: an open-air context is worth less when the sky is against it, so
+    // a beach that wins on a clear day can lose the same spot in the rain.
+    @Test func rainDampsOpenAirContextsEnoughToChangeTheWinner() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let beach = mapItem(category: .beach, metersEast: 300) // 0.65 clear, 0.39 wet
+
+        let clear = ContextClassifier.evaluate(
+            places: [beach], userLocation: user,
+            factors: ContextClassifier.Factors(weather: .clear, speed: 1.5)
+        )
+        #expect(clear.context == .beach)
+
+        let wet = ContextClassifier.evaluate(
+            places: [beach], userLocation: user,
+            factors: ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+        )
+        #expect(wet.context == .rainy)
+        #expect(wet.scores[.beach, default: 0] < clear.scores[.beach, default: 0])
+    }
+
+    // ...but damping never zeroes a context out, so standing on the beach in
+    // the rain is still the beach.
+    @Test func dampingDoesNotEraseAContextYouAreStandingIn() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let beach = mapItem(category: .beach, metersEast: 100) // 1.08 clear, 0.65 wet
+
+        let evaluation = ContextClassifier.evaluate(
+            places: [beach], userLocation: user,
+            factors: ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+        )
+        #expect(evaluation.context == .beach)
+    }
+
+    @Test func weatherMultiplierSparesTheContextsWithARoof() {
+        #expect(ContextClassifier.weatherMultiplier(for: .beach, in: .rainy) == ContextClassifier.outdoorWeatherMultiplier)
+        #expect(ContextClassifier.weatherMultiplier(for: .park, in: .snowy) == ContextClassifier.outdoorWeatherMultiplier)
+        #expect(ContextClassifier.weatherMultiplier(for: .gym, in: .rainy) == 1.0)
+        #expect(ContextClassifier.weatherMultiplier(for: .restaurant, in: .rainy) == 1.0)
+        #expect(ContextClassifier.weatherMultiplier(for: .store, in: .rainy) == 1.0)
+        // .city is mostly indoor venues, so the rain doesn't spoil it
+        #expect(ContextClassifier.weatherMultiplier(for: .city, in: .rainy) == 1.0)
+        // and fair weather touches nothing at all
+        #expect(ContextClassifier.weatherMultiplier(for: .beach, in: .clear) == 1.0)
+        #expect(ContextClassifier.weatherMultiplier(for: .beach, in: nil) == 1.0)
+        #expect(ContextClassifier.outdoorWeatherMultiplier > 0) // never zeroes a context
+    }
+
+    // Weather is not a place: it has no profile, so it has no radius to widen
+    // the POI search with and no specificity to weight it by. The flat
+    // weatherScore stands in for both.
+    @Test func weatherContextsHaveNoProfileAndDoNotWidenTheSearch() {
+        #expect(!ContextClassifier.profiles.keys.contains(.rainy))
+        #expect(!ContextClassifier.profiles.keys.contains(.snowy))
+        #expect(ContextClassifier.searchRadius == 600)
+        #expect(ContextClassifier.weatherContext(for: .rainy) == .rainy)
+        #expect(ContextClassifier.weatherContext(for: .snowy) == .snowy)
+        #expect(ContextClassifier.weatherContext(for: .clear) == nil)
+        #expect(ContextClassifier.weatherContext(for: nil) == nil)
+    }
+
+    // weatherScore sits below what the least specific profile earns at full
+    // proximity, which is the whole tuning argument: a place you are inside
+    // beats the weather, a place you are near does not.
+    @Test func weatherScoreSitsBelowTheLeastSpecificProfile() {
+        let restaurant = ContextClassifier.profile(for: .restaurant)!.specificity
+        #expect(ContextClassifier.weatherScore < restaurant)
+        #expect(ContextClassifier.weatherScore > restaurant / 2)
+    }
+
+    // Because weather scores rather than overrides, debt applies to it like
+    // anything else — and the debt-free view still disagrees, which is what
+    // arms ContextDetector's anti-flap buffer. Under the old override both
+    // views returned .rainy unconditionally and the buffer could never fire.
+    @Test func rainAccumulatesDebtLikeAnyOtherContext() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let restaurant = mapItem(category: .restaurant, metersEast: 30) // scores 0.40
+        let factors = ContextClassifier.Factors(weather: .rainy, speed: 1.5)
+
+        let fresh = ContextClassifier.evaluate(places: [restaurant], userLocation: user, factors: factors)
+        #expect(fresh.context == .rainy) // 0.50 beats 0.40
+
+        let indebted = ContextClassifier.evaluate(
+            places: [restaurant],
+            userLocation: user,
+            debts: [.rainy: ContextClassifier.maxDebt], // an hour of walking in it
+            factors: factors
+        )
+        #expect(indebted.context == .restaurant) // 0.25 no longer does
+        #expect(indebted.contextIgnoringDebt == .rainy)
+    }
+
+    // MARK: External factors — speed
+
+    // Speed is the one hard override left, and it now sits above weather:
+    // 60mph through a downpour is a car, not a rainstorm.
+    @Test func speedBeatsRainAtHighwaySpeed() {
         let user = CLLocation(latitude: 0, longitude: 0)
         let beach = mapItem(category: .beach, metersEast: 50)
         let factors = ContextClassifier.Factors(weather: .rainy, speed: 30) // raining AND highway speed
 
         let evaluation = ContextClassifier.evaluate(places: [beach], userLocation: user, factors: factors)
 
-        #expect(evaluation.context == .rainy)
-        #expect(evaluation.contextIgnoringDebt == .rainy)
+        #expect(evaluation.context == .traveling)
+        #expect(evaluation.contextIgnoringDebt == .traveling)
         #expect(!evaluation.zones.isEmpty) // the map still gets its zones
+        // and the weather doesn't even reach the scoreboard up there
+        #expect(evaluation.scores[.rainy] == nil)
     }
 
-    @Test func snowOverridesPOIsAndSpeed() {
+    @Test func speedBeatsSnowAtHighwaySpeed() {
         let factors = ContextClassifier.Factors(weather: .snowy, speed: 30)
-        #expect(ContextClassifier.contextOverride(for: factors) == .snowy)
+        #expect(ContextClassifier.contextOverride(for: factors) == .traveling)
+    }
+
+    // Below the threshold the weather is back in play — the override is speed's
+    // alone, so bad weather at walking pace never reaches contextOverride.
+    @Test func weatherIsNoLongerAHardOverride() {
+        #expect(ContextClassifier.contextOverride(for: ContextClassifier.Factors(weather: .rainy, speed: 1.5)) == nil)
+        #expect(ContextClassifier.contextOverride(for: ContextClassifier.Factors(weather: .snowy, speed: nil)) == nil)
     }
 
     @Test func speedAbove35mphClassifiesAsTraveling() {
