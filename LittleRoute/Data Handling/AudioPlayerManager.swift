@@ -333,8 +333,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             // to run per file. Whole Songs and not just their names, deliberately: the
             // existing ones go straight back to the caller, which reads every field off
             // them to build the queue — so narrowing this fetch would only move the round
-            // trips from here to the first property access. See existingSongNames for the
-            // case where narrowing does pay.
+            // trips from here to the first property access.
             var songsByName = existingSongsByName(in: modelContext)
 
             for fileName in mp3Files {
@@ -343,9 +342,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
                 // Check if song already exists
                 if let existing = songsByName[songName] {
+                    // Deliberately not forcing isImported = false on it. A user
+                    // can have imported an mp3 whose basename matches a bundled
+                    // one, and clearing the flag here would drop their copy out
+                    // of the library screen every launch. A record that says
+                    // "imported" is a claim only the import path makes; this one
+                    // has no business retracting it.
                     loadedSongs.append(existing)
                 } else {
-                    let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: ["All"], populationMin: 0, populationMax: 10000000)
+                    // isImported: false — this file ships inside the app bundle,
+                    // so there is nothing in Documents/Music for the user to
+                    // manage or delete. It plays; it doesn't appear in My Music.
+                    let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: ["All"], populationMin: 0, populationMax: 10000000, isImported: false)
                     modelContext.insert(newSong)
 
                     // Fold the new song into the index before moving on. Two files in the
@@ -404,7 +412,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         // the gap. Nothing in the app does today — the importer is a single sheet, and the
         // bundle load only runs against an empty library — and the price of being wrong is
         // one duplicate row, against N round trips saved on every import.
-        var knownSongNames = existingSongNames(in: modelContext)
+        //
+        // Whole Songs rather than the bare Set of names this used to take: the duplicate
+        // branch below now writes isImported to the existing record, so the objects are
+        // needed and not just their names. Narrowing the fetch would only have moved the
+        // round trip to the first property access.
+        var songsByName = existingSongsByName(in: modelContext)
 
         for url in urls {
             let accessing = url.startAccessingSecurityScopedResource()
@@ -412,10 +425,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
             let songName = url.deletingPathExtension().lastPathComponent
             let destination = Self.importedMusicDirectory.appendingPathComponent("\(songName).mp3")
+            let existing = songsByName[songName]
 
             // Copy the file in (even if a Song record already exists from a
             // previous failed attempt, the file may be missing)
-            if !FileManager.default.fileExists(atPath: destination.path) || !knownSongNames.contains(songName) {
+            if !FileManager.default.fileExists(atPath: destination.path) || existing == nil {
                 do {
                     try await Task.detached(priority: .userInitiated) {
                         try Self.coordinatedCopy(from: url, to: destination)
@@ -427,8 +441,21 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
             }
 
             // Skip the record insert for duplicates
-            if knownSongNames.contains(songName) {
-                print("Song already exists, skipping record: \(songName)")
+            if let existing {
+                // ...but not the flag. We are past the copy, so the mp3 is in
+                // Documents/Music whether we just put it there or found it, and
+                // the record has to agree or the song the user has plainly just
+                // imported never shows up in My Music. Reachable two ways: the
+                // name collides with a bundled song, or the row predates the flag
+                // and the migration's backfill found no file to match it against.
+                // Guarded rather than assigned, so an ordinary re-import doesn't
+                // dirty a row that already says the right thing.
+                if existing.isImported {
+                    print("Song already exists, skipping record: \(songName)")
+                } else {
+                    existing.isImported = true
+                    print("Song already exists, marking the existing record imported: \(songName)")
+                }
                 continue
             }
 
@@ -447,13 +474,15 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 }
             }
 
-            let newSong = Song(title: title, songName: songName, artist: artist, locations: ["All"], populationMin: 0, populationMax: 10000000)
+            // isImported: true — we have just copied this file into
+            // Documents/Music ourselves. This is the one place that claim is made.
+            let newSong = Song(title: title, songName: songName, artist: artist, locations: ["All"], populationMin: 0, populationMax: 10000000, isImported: true)
             modelContext.insert(newSong)
             // and the rest of the batch now knows about it — see the note above the fetch.
-            // The model's own songName, not the local one, so the set says what the store
+            // The model's own songName, not the local one, so the index says what the store
             // will say: Song.init normalizes the name it is given, and a URL like
             // "track.mp3.mp3" leaves the two disagreeing.
-            knownSongNames.insert(newSong.songName)
+            songsByName[newSong.songName] = newSong
             print("Imported song: \(title)")
         }
 
@@ -468,25 +497,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: allSongs)
     }
 
-    // Every songName already in the store, as a Set to test membership against. This and
-    // existingSongsByName replace a songExists(_:in:) that ran a predicated fetch per
-    // question — importing forty songs asked eighty times, and loading the bundle once
-    // per file, when the answer to all of them fits in one round trip.
+    // Every song in the store, indexed by songName. This replaces a songExists(_:in:) that
+    // ran a predicated fetch per question — importing forty songs asked eighty times, and
+    // loading the bundle once per file, when the answer to all of them fits in one round
+    // trip.
     //
-    // propertiesToFetch keeps the rows narrow: one String per song rather than a fully
-    // materialized Song. That is only safe because the caller asks about names and
-    // nothing else — everything left out comes back as a fault, so reading one property
-    // sends SwiftData straight back to the store, which is the exact round trip this
-    // exists to avoid. Narrowing a fetch whose results get used is a false economy, which
-    // is why loadSongsFromBundle asks for whole objects instead.
-    private func existingSongNames(in modelContext: ModelContext) -> Set<String> {
-        var descriptor = FetchDescriptor<Song>()
-        descriptor.propertiesToFetch = [\.songName]
-        return Set(((try? modelContext.fetch(descriptor)) ?? []).map(\.songName))
-    }
-
-    // Every song in the store, indexed by songName, for the caller that needs the objects
-    // themselves rather than just the names.
+    // It had a narrower sibling, existingSongNames, which used propertiesToFetch to pull
+    // one String per song for importSongs to test membership against. That went when
+    // importSongs started writing isImported to the rows it finds: everything a narrowed
+    // fetch leaves out comes back as a fault, so touching a second property sends SwiftData
+    // straight back to the store — the exact round trip the narrowing was there to avoid.
+    // Narrowing a fetch whose results get used is a false economy, and both callers use
+    // them now.
     //
     // First one wins on a collision, which is the .first the per-name fetch used to take.
     // Nothing enforces songName uniqueness yet, so duplicates remain possible — and since
