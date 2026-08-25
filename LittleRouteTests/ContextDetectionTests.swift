@@ -659,15 +659,15 @@ struct ContextDetectorTests {
 
     @Test func switchesAfterDwellWindow() {
         let (detector, advance) = makeDetector(initial: .all)
-        var fired: MusicContext?
-        detector.onContextChange = { fired = $0 }
 
         detector.process(observation: .store)
         advance(30)
         detector.process(observation: .store)
 
+        // confirmedContext is the whole signal now — LR-08 removed the
+        // onContextChange callback this used to also assert on, because the
+        // published property already says everything the callback did.
         #expect(detector.confirmedContext == .store)
-        #expect(fired == .store)
         #expect(detector.candidateContext == nil)
     }
 
@@ -699,15 +699,12 @@ struct ContextDetectorTests {
 
     @Test func nilObservationPromotesToTraveling() {
         let (detector, advance) = makeDetector(initial: .beach)
-        var fired: MusicContext?
-        detector.onContextChange = { fired = $0 }
 
         detector.process(observation: nil)
         advance(30)
         detector.process(observation: nil)
 
         #expect(detector.confirmedContext == .traveling)
-        #expect(fired == .traveling)
     }
 
     // MARK: Debt
