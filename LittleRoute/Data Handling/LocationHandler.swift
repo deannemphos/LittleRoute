@@ -25,6 +25,12 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     // Throttling: accept a new location only after this much time has passed
     // since the last accepted update, or when the user has moved farther than
     // the distance threshold. Saves battery and avoids redundant POI churn.
+    //
+    // This stayed in software through LR-24 rather than moving onto the manager's
+    // distanceFilter, and the *time* arm is the load-bearing half -- see the long
+    // note on distanceFilter in init() before deleting it in the name of battery.
+    // The distance arm is really just a fast path for vehicles: you have to be
+    // covering better than 400m/60s (~24km/h) for it to fire before the clock does.
     private let updateInterval: TimeInterval = 60
     private let significantDistance: CLLocationDistance = 400
     private var lastAcceptedLocation: CLLocation?
@@ -36,12 +42,58 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     // this just keeps us from spamming it within a session.
     private var hasRequestedAlwaysUpgrade = false
 
-    // Init with passthrough of maximum possible accuracy to differentiate between close buildings
-    // (hopefully)
+    // Init. This used to ask for the maximum possible accuracy to tell close
+    // buildings apart (hopefully); it no longer does, and the two properties
+    // below carry most of LR-24 between them.
     override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+
+        // kCLLocationAccuracyBest pins the GPS chip in continuous full-power mode,
+        // and we were buying precision that nothing downstream could spend. The
+        // only numbers that decide anything: the smallest effectiveRadius in
+        // ContextClassifier.profiles is 70m (restaurants), and ContextDetector's
+        // displacement gate is 50m. A ten-metre fix is a seventh of the first and
+        // a fifth of the second, so neither "am I inside this zone" nor "have I
+        // moved far enough to buy a fresh search" changes its answer because of
+        // the downgrade -- and 10m of noise stays comfortably under that 50m gate,
+        // so drift still can't unlock a search on its own while you sit still.
+        //
+        // Ten metres is also the *coarsest* rung that holds. The next one down is
+        // kCLLocationAccuracyHundredMeters, whose error is larger than the whole
+        // restaurant radius and would swamp the gate twice over: drift alone would
+        // start buying searches and flipping zone membership, which is precisely
+        // what that gate was sized to prevent.
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+
+        // ...and this one stays wide open, however much LR-24 wanted it closed.
+        //
+        // distanceFilter has no time arm. It fires on movement and on nothing
+        // else, so any value above the noise floor delivers a genuinely stationary
+        // user exactly zero fixes. The software throttle below cannot paper over
+        // that: a throttle *discards* events, it can't manufacture them, so the
+        // moment the OS stops delivering there is nothing left to throttle and the
+        // 60s arm never gets a turn.
+        //
+        // And stationary is the case that matters most here. ContextDetector runs
+        // entirely off delivered fixes now (LR-12), its dwell window only closes on
+        // an evaluation, and LR-21's displacement gate re-scores the cached places
+        // rather than returning early for exactly this reason. Someone who has just
+        // sat down inside a restaurant is precisely the person whose dwell is about
+        // to complete and whose music is about to change. Starving them is the same
+        // hole the poll timer left, reached by a third road -- and a Timer can't
+        // plug it either, for the reason POIProviding spells out: it stops firing
+        // the moment the app is suspended.
+        //
+        // So the wakeup filtering stays in didUpdateLocations and LR-24's battery
+        // win comes out of desiredAccuracy above. Set explicitly rather than left
+        // to the default because the next person to read LR-24 will come here to
+        // "finish" it.
+        // @TODO: if ~1Hz delivery really does show up in an Energy Log, the honest
+        //        fix is a coarser filter *plus* a source that still reports while
+        //        stationary -- CLLocationUpdate.liveUpdates() flags that state --
+        //        never a bare distanceFilter.
+        locationManager.distanceFilter = kCLDistanceFilterNone
 
         // the entire premise of this app is music that changes as you move, which
         // does not survive the screen going off: CoreLocation stops delivering the
@@ -63,8 +115,9 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
         // reached by a different road. ContextDetector is driven by delivery, so
         // a user who has sat down still needs fixes to keep arriving: that is
         // exactly when a dwell window is supposed to be finishing.
-        // @TODO: LR-24 revisits accuracy/distanceFilter; if this turns out to eat
-        //        battery, the answer is a coarser filter, not re-enabling pausing.
+        // LR-24 has now had its go at accuracy/distanceFilter, and this line came
+        // through it untouched: accuracy came down, the filter stayed open, pausing
+        // stays off. Nothing about battery tuning makes re-enabling it the answer.
         locationManager.pausesLocationUpdatesAutomatically = false
     }
     
@@ -189,10 +242,19 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
         // Throttle: only accept the update if 60s have passed since the last
         // accepted one, or the user moved more than 400m. The first update is
         // always accepted.
+        //
+        // Same rule as it always was, just written as a rejection so the two arms
+        // can short-circuit. Since distanceFilter stays open we run this ~60 times
+        // for every fix we actually keep, and distance(from:) is a haversine --
+        // reading the clock first means the 59 we're about to throw away don't each
+        // pay for the trig. This is the cheap half of "stop doing work per wakeup";
+        // the expensive half was the GPS mode, and that's handled in init().
         if let lastLocation = lastAcceptedLocation, let lastTime = lastAcceptedTime {
             let elapsed = Date().timeIntervalSince(lastTime)
-            let distance = location.distance(from: lastLocation)
-            guard elapsed >= updateInterval || distance > significantDistance else { return }
+            if elapsed < updateInterval,
+               location.distance(from: lastLocation) <= significantDistance {
+                return
+            }
         }
 
         lastAcceptedLocation = location
