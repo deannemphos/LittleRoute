@@ -141,6 +141,27 @@ struct ContentView: View {
         .onAppear {
             locationHandler.requestLocationAuthorization()
             locationHandler.startLocationUpdates()
+
+            // Started *before* the queue is built, which is the whole of LR-13's
+            // half of this. start() is where the detector rehydrates the context
+            // it was last confirmed in, so asking it afterwards is the only way
+            // the answer can be anything but its initial value.
+            contextDetector.start()
+
+            // ...and this is that answer being handed over. The reloadQueue
+            // calls below read currentContext, and the onChange further down
+            // deliberately never fires for an initial value — so without this
+            // line a restored .beach would sit in the detector, unheard, until
+            // the next confirmed switch, with the header still reading "All"
+            // over a beach playlist.
+            //
+            // Assigned rather than routed through switchContext because
+            // switchContext no-ops when the two already agree, and that is the
+            // ordinary cold start — the one launch that most needs its queue
+            // built. There is nothing audible to cross-fade from yet either;
+            // playback starts at the bottom of this closure.
+            audioManager.currentContext = contextDetector.confirmedContext
+
             // Load songs from Music folder if none exist
             if songs.isEmpty {
                 let loadedSongs = audioManager.loadSongsFromBundle(modelContext: modelContext)
@@ -153,14 +174,6 @@ struct ContentView: View {
                 audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
             }
 
-            // The reloadQueue above is also what applies the *launch* context,
-            // which matters because the onChange below deliberately never fires
-            // for an initial value. It works because the two agree at startup:
-            // AudioPlayerManager.currentContext and ContextDetector's
-            // initialContext are both .all. Anything that seeds the detector
-            // from disk (LR-13) breaks that pairing and has to hand the
-            // restored context to reloadQueue here instead.
-            contextDetector.start()
             // Auto-start playback on launch, unless the user is already listening
             // to something else — see startPlaybackIfNothingElseIsPlaying
             audioManager.startPlaybackIfNothingElseIsPlaying()
@@ -178,10 +191,13 @@ struct ContentView: View {
         // here instead means it is whatever SwiftUI last handed this view, as
         // of the moment the context actually changed. Nothing to keep in sync.
         //
-        // onChange won't fire for the value the detector starts on; see the
-        // note by reloadQueue in onAppear for who covers launch. It also only
-        // fires on a real change, and switchContext guards a no-op switch on
-        // its own side, so the crossfade can't be triggered by standing still.
+        // onChange won't fire for the value the detector starts on; the
+        // currentContext assignment in onAppear is who covers launch. A restore
+        // *does* land as a change here — start() publishes it — but by then
+        // onAppear has already made currentContext agree, so this arrives as
+        // the no-op switchContext guards against rather than as a crossfade
+        // into music that is already playing. That guard is also why standing
+        // still can't trigger one.
         .onChange(of: contextDetector.confirmedContext) { _, newContext in
             audioManager.switchContext(to: newContext, songs: songs)
         }

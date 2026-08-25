@@ -2,6 +2,21 @@ import Foundation
 import CoreLocation
 import MapKit
 
+// The narrow slice of UserDefaults this file touches, behind a protocol for
+// exactly the reason POIProviding and WeatherProviding are: constructing a
+// detector should not reach into the app's real defaults domain, least of all
+// from a test that then leaves its state lying there for the next one.
+// UserDefaults satisfies this as written — these are its own signatures, so the
+// conformance is empty rather than an adapter.
+protocol KeyValueStoring {
+    func data(forKey defaultName: String) -> Data?
+    func double(forKey defaultName: String) -> Double
+    func set(_ value: Any?, forKey defaultName: String)
+    func removeObject(forKey defaultName: String)
+}
+
+extension UserDefaults: KeyValueStoring {}
+
 // Dwell-based area/context detection.
 //
 // Evaluates nearby POIs every time the location provider hands us a fix, and
@@ -17,6 +32,12 @@ import MapKit
 // context indefinitely. Debt discounts that context's score so common POIs
 // (restaurants, stores) can't dominate a whole city walk. Debt by itself can
 // never force a switch: a competing zone must actually be observed.
+//
+// Some of that state outlives the process — see the Persistence section for
+// which parts and why. It has to: LR-11 put the app on background location, so
+// being jetsammed and relaunched is now routine rather than exotic, and a
+// detector that woke up remembering nothing would hand the user a fresh
+// context reshuffle every time the OS reclaimed some memory.
 class ContextDetector: ObservableObject {
 
     // MARK: - Configuration
@@ -74,6 +95,27 @@ class ContextDetector: ObservableObject {
     // Prevents jittery back-and-forth flapping in POI-cluttered areas.
     let switchBufferDuration: TimeInterval
 
+    // How old persisted state may be and still count as evidence about where
+    // the user is *now*.
+    //
+    // Six hours, picked against what each mistake costs. The case this exists
+    // for is a background jetsam or a force-quit — seconds to minutes — and a
+    // lunch break, a meeting, an afternoon with the app closed at the same desk
+    // are all still the same place. A night's sleep is not, and a flight
+    // certainly isn't: restoring .beach onto somebody who has since flown home
+    // is worse than restoring nothing, because the dwell window means they hear
+    // the wrong playlist for dwellDuration before the detector can talk us out
+    // of it. Six hours is about the longest gap that still reads as "same
+    // place" more often than not.
+    //
+    // Note this is really governing the confirmed context alone. Debt expires
+    // far sooner under its own rules — it decays over debtAccumulationDuration,
+    // so any balance is at zero within minutes of the app going away, cutoff or
+    // no cutoff.
+    let maximumRestoreAge: TimeInterval
+    static let defaultMaximumRestoreAge: TimeInterval = 6 * 60 * 60
+    static let stateDefaultsKey = "contextDetectorState"
+
     // Speeds above this (m/s) count as "actively traveling" — roughly a slow walk.
     private let movementSpeedThreshold: CLLocationSpeed = 0.5
 
@@ -118,8 +160,23 @@ class ContextDetector: ObservableObject {
     // asking "am I still standing where the results I'm holding describe?",
     // so a baseline with no results behind it would mean nothing. A search
     // that fails therefore updates neither, and the next fix retries.
+    //
+    // Deliberately not persisted, unlike the state machine below. The gate's
+    // question only means anything against a current fix, and after a relaunch
+    // we have none until the provider delivers one — so a restored cache would
+    // let the very first evaluation of a new process be answered entirely from
+    // disk and skip the search, at the one moment we most want ground truth.
+    // Leaving them nil means the first evaluation always searches, which is the
+    // behaviour start() was written for.
     private var lastSearchLocation: CLLocation?
     private var lastSearchPlaces: [MKMapItem]?
+
+    // Where persisted state goes, and whether we've already taken it back out.
+    // Restoring is once per instance: a stop()/start() cycle inside one process
+    // has no gap to rehydrate across, and what's in memory is by definition at
+    // least as fresh as the copy on disk.
+    private let store: any KeyValueStoring
+    private var hasRestoredState = false
 
     // Injectable clock for testability
     var now: () -> Date = { Date() }
@@ -136,6 +193,8 @@ class ContextDetector: ObservableObject {
          searchRadius: CLLocationDistance = ContextClassifier.searchRadius,
          debtAccumulationDuration: TimeInterval? = nil,
          switchBufferDuration: TimeInterval = 180,
+         maximumRestoreAge: TimeInterval = ContextDetector.defaultMaximumRestoreAge,
+         store: any KeyValueStoring = UserDefaults.standard,
          weatherProvider: WeatherProviding?) {
         self.poiProvider = poiProvider
         self.confirmedContext = initialContext
@@ -144,10 +203,15 @@ class ContextDetector: ObservableObject {
         self.dwellDuration = dwellDuration
         self.searchRadius = searchRadius
 
-        let stored = UserDefaults.standard.double(forKey: Self.debtAccumulationDefaultsKey)
+        // `store` rather than `self.store`: the property isn't assigned yet, and
+        // reading self before every stored property is initialised isn't
+        // allowed. The parameter is the same object either way.
+        let stored = store.double(forKey: Self.debtAccumulationDefaultsKey)
         let resolved = debtAccumulationDuration ?? (stored > 0 ? stored : Self.defaultDebtAccumulationDuration)
         self.debtAccumulationDuration = resolved > 0 ? resolved : Self.defaultDebtAccumulationDuration
         self.switchBufferDuration = switchBufferDuration
+        self.maximumRestoreAge = maximumRestoreAge
+        self.store = store
         self.weatherProvider = weatherProvider
     }
 
@@ -167,6 +231,18 @@ class ContextDetector: ObservableObject {
     public func start() {
         guard !isRunning else { return }
         isRunning = true
+
+        // Rehydrate before anything else in here. Two callers depend on the
+        // ordering: the evaluate() below, which would otherwise walk a state
+        // machine that's about to be overwritten underneath it, and ContentView,
+        // which reads confirmedContext immediately after this call to decide
+        // what the launch queue should be — onChange(of:) never fires for an
+        // initial value, so start() returning is the only moment a restored
+        // context can be handed over.
+        if !hasRestoredState {
+            hasRestoredState = true
+            restoreState()
+        }
 
         // Weak self: the app owns both of us, and a strong capture here would
         // pin the detector's lifetime to the provider's.
@@ -203,6 +279,10 @@ class ContextDetector: ObservableObject {
         ) { [weak self] result in
             guard let self = self, case .success(let places) = result else { return }
             DispatchQueue.main.async {
+                // Every exit from here has moved something worth keeping — the
+                // early return below still cleared the buffer on its way past.
+                defer { self.persistState() }
+
                 // A manual refresh is a real search, so it re-arms the
                 // displacement gate and reseeds the cache like any other —
                 // otherwise the next fix would immediately buy a second one
@@ -357,6 +437,10 @@ class ContextDetector: ObservableObject {
     func tickDebt(isMoving: Bool) {
         let currentTime = now()
         defer { lastDebtTick = currentTime }
+        // Unconditional, including the priming tick that returns below: the
+        // saved timestamp is how long we were gone, not how long since a
+        // balance last moved, so it has to be rewritten whenever we look.
+        defer { persistState() }
         guard let lastTick = lastDebtTick else { return }
 
         let elapsed = currentTime.timeIntervalSince(lastTick)
@@ -423,6 +507,12 @@ class ContextDetector: ObservableObject {
     // Exposed as internal (not private) for unit testing.
     func process(observation: MusicContext?,
                  observationIgnoringDebt: MusicContext? = nil) {
+        // Covers all three exits. The candidate-only paths write nothing we
+        // keep — dwell deliberately doesn't survive a launch — but the first
+        // exit can still have retired an expired buffer inside isBuffered(),
+        // and every exit refreshes the timestamp. See persistState().
+        defer { persistState() }
+
         let observedContext = observation ?? .traveling
         let debtFreeWinner = observationIgnoringDebt ?? observation
 
@@ -457,5 +547,117 @@ class ContextDetector: ObservableObject {
             candidateSince = nil
             print("ContextDetector: switched context to \(observedContext.rawValue)")
         }
+    }
+
+    // MARK: - Persistence
+    //
+    // What survives a relaunch, and — more interestingly — what doesn't.
+    //
+    // Kept:
+    // - confirmedContext, because it is the whole output of this type and the
+    //   thing the user hears. Losing it drops the music back to .all on every
+    //   relaunch, which is the abrupt reshuffle this task exists to stop.
+    // - debts, because debt is an accumulated *history*: an hour of walking
+    //   past restaurants is exactly the evidence that stops restaurants owning
+    //   the rest of the walk, and throwing it away hands them the city back.
+    // - the switch buffer, because it's an absolute deadline rather than a
+    //   duration. Being killed inside its window is the worst possible moment
+    //   to forget it — start() evaluates immediately, sees the context we just
+    //   left, and flaps straight back into the thing the buffer was armed to
+    //   prevent. The expiry is already a Date, so serving out the remainder of
+    //   the sentence costs one field.
+    //
+    // Not kept:
+    // - candidateContext / candidateSince. candidateSince is a claim that we
+    //   have been watching one context *continuously* since then, and a process
+    //   that wasn't running watched nothing at all. Restoring it would let a
+    //   candidate that was 29 seconds old when we died promote itself on the
+    //   first evaluation after a relaunch hours later and a city away: a stale
+    //   half-measurement, taken against a location the user has left, cashed in
+    //   as a confirmed switch with no dwell actually served. It is the one piece
+    //   of state whose entire meaning is "uninterrupted", and it costs 30
+    //   seconds to re-earn honestly.
+    // - LR-21's search cache — see lastSearchLocation for why.
+    // - zones, contextScores and latestWeather, which are derived display state
+    //   that the first evaluation recomputes anyway.
+    //
+    // savedAt is the freshness of the *observation*, not of the values, which is
+    // why every transition rewrites it even when nothing in it changed. That's
+    // what makes the age computed on restore mean "how long were we gone"
+    // rather than "how long since the context last changed" — and for someone
+    // who has sat in the same cafe all afternoon those are very different
+    // numbers, with only the first one being any of our business.
+
+    private struct PersistedState: Codable {
+        // Raw values rather than the enum, because MusicContext isn't Codable
+        // and its raw values are already the on-disk spelling everywhere else
+        // (see the @NOTE in MusicContext.swift). A rename orphans this the same
+        // way it orphans Song.locations; an unrecognised one is simply dropped
+        // on the way back in rather than failing the whole restore.
+        let confirmedContext: String
+        let debts: [String: Double]
+        let bufferedContext: String?
+        let bufferExpiry: Date?
+        let savedAt: Date
+    }
+
+    // Cheap enough to run on every state transition: a few dozen bytes into
+    // UserDefaults' in-memory cache, at most twice per accepted fix, and fixes
+    // are already floored at minimumSearchInterval.
+    private func persistState() {
+        let state = PersistedState(
+            confirmedContext: confirmedContext.rawValue,
+            debts: debts.reduce(into: [String: Double]()) { $0[$1.key.rawValue] = $1.value },
+            bufferedContext: bufferedContext?.rawValue,
+            bufferExpiry: bufferExpiry,
+            savedAt: now()
+        )
+        guard let encoded = try? JSONEncoder().encode(state) else { return }
+        store.set(encoded, forKey: Self.stateDefaultsKey)
+    }
+
+    // Called once, from start(), rather than from init: `now` is injected after
+    // construction, so a restore that ran in the initialiser could only ever
+    // read the real clock and no test could drive it.
+    private func restoreState() {
+        guard let encoded = store.data(forKey: Self.stateDefaultsKey),
+              let saved = try? JSONDecoder().decode(PersistedState.self, from: encoded) else { return }
+
+        // Wall clock is the only clock that survives a process, so this is also
+        // the only place a user rewinding their device time can confuse us. A
+        // negative age means they did — discard rather than try to reason about
+        // it, same as anything else too old to trust.
+        let age = now().timeIntervalSince(saved.savedAt)
+        guard age >= 0, age <= maximumRestoreAge else {
+            store.removeObject(forKey: Self.stateDefaultsKey)
+            return
+        }
+
+        // Leaves initialContext in place if the raw value no longer maps.
+        if let restored = MusicContext(rawValue: saved.confirmedContext) {
+            confirmedContext = restored
+        }
+
+        debts = saved.debts.reduce(into: [MusicContext: Double]()) { result, entry in
+            guard let context = MusicContext(rawValue: entry.key), entry.value > 0 else { return }
+            result[context] = min(entry.value, ContextClassifier.maxDebt)
+        }
+
+        // Only worth restoring if there is sentence left to serve.
+        if let raw = saved.bufferedContext, let expiry = saved.bufferExpiry,
+           let buffered = MusicContext(rawValue: raw), now() < expiry {
+            bufferedContext = buffered
+            bufferExpiry = expiry
+        }
+
+        // Charge the whole gap to the debt clock as time spent *not moving*.
+        // Debt only accrues for a confirmed context whose user is walking, and a
+        // suspended process watched nobody walk anywhere — so unobserved time
+        // can pay debt down but must never build it. Handing the existing tick
+        // the old timestamp does exactly that, with the same arithmetic every
+        // other decay uses, and picks up the "release the buffer once its debt
+        // drains" rule on the way through for free.
+        lastDebtTick = saved.savedAt
+        tickDebt(isMoving: false)
     }
 }
