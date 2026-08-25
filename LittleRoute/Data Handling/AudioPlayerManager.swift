@@ -9,25 +9,33 @@ import Foundation
 import AVFoundation
 import MediaPlayer
 import SwiftUI
+import Observation
 import _SwiftData_SwiftUI
 
 // Everything on this class expects to be called from the main thread. It writes
-// @Published state that SwiftUI reads there, and it schedules its progress Timer on
+// observable state that SwiftUI reads there, and it schedules its progress Timer on
 // whatever run loop the caller happens to be on. Every Swift caller is view code, so
 // they already satisfy that. The three ways in from outside Swift can't promise it —
 // the AVAudioPlayerDelegate callback, the AVAudioSession notification selectors, and
 // the MPRemoteCommandCenter blocks all arrive on a thread of the system's choosing —
 // so each of those hops onto main itself before touching anything here.
-class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
-    
-    @Published var isPaused: Bool = false
-    @Published var isShuffled: Bool = false
-    @Published var songLength: TimeInterval = 0.0   // total length of the song
-    @Published var currentTime: TimeInterval = 0.0  // current playback time
-    @Published var currentContext: MusicContext = .all
-    @Published var currentSong: Song? = nil // the currently playing song, if any
+@Observable
+class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
-    @Published private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
+    var isPaused: Bool = false
+    var isShuffled: Bool = false
+    var songLength: TimeInterval = 0.0   // total length of the song
+    // Rewritten twice a second by the playback timer. Under ObservableObject that
+    // made this the most expensive property in the app: every tick fired
+    // objectWillChange, and any view observing the manager was invalidated whether
+    // or not it had ever read the clock — which took the map, its zone overlays and
+    // both CurvedText arcs down with it. Observation tracks reads per property, so
+    // a tick now reaches only the progress bar and the lock-screen sync.
+    var currentTime: TimeInterval = 0.0  // current playback time
+    var currentContext: MusicContext = .all
+    var currentSong: Song? = nil // the currently playing song, if any
+
+    private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
 
     // The same songs as songQueue, in the order the caller handed them to us, never
     // shuffled. songQueue is what the drawer renders, so it has to hold the shuffled
@@ -38,14 +46,19 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // pass an unsorted @Query, so this is SwiftData's own row order rather than anything
     // the user chose. It is stable enough for shuffle to round-trip within a session,
     // which is all this is for — it is not a sort, and shouldn't be mistaken for one.
-    private var orderedQueue: [Song] = []
+    @ObservationIgnored private var orderedQueue: [Song] = []
 
-    private var audioPlayer: AVAudioPlayer?
-    private var currentIndex: Int = 0 // index of the current song in the queue
-    private var playbackTimer: Timer?
-    private var ticksSinceNowPlayingSync = 0 // see startPlaybackTimer
-    private var wasPlayingBeforeInterruption = false // see handleInterruption
-    private var hasActivatedSession = false // see activateSession / deactivateSession
+    // None of the below is view state — it is the player, its clock, and the
+    // bookkeeping the two need — so it stays out of observation. The macro would
+    // otherwise track every one of them, and currentIndex and
+    // ticksSinceNowPlayingSync in particular are written on the same twice-a-second
+    // path as currentTime, which is precisely the traffic this task exists to stop.
+    @ObservationIgnored private var audioPlayer: AVAudioPlayer? = nil
+    @ObservationIgnored private var currentIndex: Int = 0 // index of the current song in the queue
+    @ObservationIgnored private var playbackTimer: Timer? = nil
+    @ObservationIgnored private var ticksSinceNowPlayingSync = 0 // see startPlaybackTimer
+    @ObservationIgnored private var wasPlayingBeforeInterruption = false // see handleInterruption
+    @ObservationIgnored private var hasActivatedSession = false // see activateSession / deactivateSession
 
     // 0.5s per playback tick, so the lock screen's elapsed time is reconciled every 5 seconds
     private static let nowPlayingSyncTicks = 10
@@ -167,7 +180,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
 
         // These land on whatever thread the audio session feels like using, and
-        // everything below touches @Published state and a run-loop Timer.
+        // everything below touches observable state and a run-loop Timer.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
@@ -255,7 +268,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Lock screen / Control Center playback controls.
     //
     // MediaPlayer runs these blocks on a thread of its own choosing, and everything they
-    // reach — musicPlayPause, skip, previous — rewrites @Published state, so each one
+    // reach — musicPlayPause, skip, previous — rewrites observable state, so each one
     // hops onto main before it touches anything, the same way the interruption handlers
     // above do.
     //
@@ -736,7 +749,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // Automatically play the next song when the current one finishes.
     //
     // AVFoundation delivers this on the thread running the player's own audio queue, not
-    // necessarily main, and skip() rewrites @Published state and reschedules the playback
+    // necessarily main, and skip() rewrites observable state and reschedules the playback
     // Timer. Hopping also means this callback has returned before skip() swaps audioPlayer
     // out, rather than us releasing the player from inside its own delegate method.
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
