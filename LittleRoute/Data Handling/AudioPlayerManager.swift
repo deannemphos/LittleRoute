@@ -11,6 +11,13 @@ import MediaPlayer
 import SwiftUI
 import _SwiftData_SwiftUI
 
+// Everything on this class expects to be called from the main thread. It writes
+// @Published state that SwiftUI reads there, and it schedules its progress Timer on
+// whatever run loop the caller happens to be on. Every Swift caller is view code, so
+// they already satisfy that. The three ways in from outside Swift can't promise it —
+// the AVAudioPlayerDelegate callback, the AVAudioSession notification selectors, and
+// the MPRemoteCommandCenter blocks all arrive on a thread of the system's choosing —
+// so each of those hops onto main itself before touching anything here.
 class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     
     @Published var isPaused: Bool = false
@@ -176,30 +183,48 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         print("Interruption ended, resuming playback")
     }
 
-    // Lock screen / Control Center playback controls
+    // Lock screen / Control Center playback controls.
+    //
+    // MediaPlayer runs these blocks on a thread of its own choosing, and everything they
+    // reach — musicPlayPause, skip, previous — rewrites @Published state, so each one
+    // hops onto main before it touches anything, the same way the interruption handlers
+    // above do.
+    //
+    // The reads hop too, not just the writes: play and pause decide what to do by asking
+    // isPaused, and asking from another thread races with the main-thread write just as
+    // badly as writing would. The price of moving that check onto main is that we have to
+    // answer the system before we know the answer, so these can no longer report
+    // .commandFailed for "we were already playing". Reporting .success and quietly doing
+    // nothing is the better lie of the two — a redundant play command isn't a failure.
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
-            guard let self = self, self.isPaused else { return .commandFailed }
-            self.musicPlayPause()
+            guard let self = self else { return .commandFailed }
+            DispatchQueue.main.async {
+                guard self.isPaused else { return }
+                self.musicPlayPause()
+            }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self, !self.isPaused else { return .commandFailed }
-            self.musicPlayPause()
+            guard let self = self else { return .commandFailed }
+            DispatchQueue.main.async {
+                guard !self.isPaused else { return }
+                self.musicPlayPause()
+            }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.musicPlayPause()
+            DispatchQueue.main.async { self?.musicPlayPause() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.skip()
+            DispatchQueue.main.async { self?.skip() }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.previous()
+            DispatchQueue.main.async { self?.previous() }
             return .success
         }
     }
@@ -476,11 +501,18 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     
     // MARK: AVAudioPlayerDelegate
-    // Automatically play the next song when the current one finishes
+    // Automatically play the next song when the current one finishes.
+    //
+    // AVFoundation delivers this on the thread running the player's own audio queue, not
+    // necessarily main, and skip() rewrites @Published state and reschedules the playback
+    // Timer. Hopping also means this callback has returned before skip() swaps audioPlayer
+    // out, rather than us releasing the player from inside its own delegate method.
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        if flag {
+        guard flag else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             print("Song finished, playing next song")
-            skip()
+            self.skip()
         }
     }
     
@@ -584,7 +616,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         print("Queue loaded with \(songQueue.count) songs")
     }
     
-    // Timer management for playback progress
+    // Timer management for playback progress.
+    // scheduledTimer attaches to the *calling* thread's run loop, so this relies on the
+    // main-thread contract at the top of the file for more than just the currentTime
+    // write below: scheduled from a background thread it would land on a run loop nobody
+    // is running, and the progress bar would simply stop moving. That was reachable until
+    // the remote commands started hopping — a skip from the lock screen froze the scrubber.
     private func startPlaybackTimer() {
         stopPlaybackTimer()
         // every caller of this has just pushed now-playing info itself, so start the
