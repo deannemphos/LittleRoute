@@ -31,11 +31,14 @@ struct ErrorView: View {
                 .font(.system(size: 56))
                 .foregroundColor(.red)
                 .padding(.bottom, 10)
-            
+                .accessibilityHidden(true) // decoration; the title states the problem
+
             Text(errorTitle)
                 .font(.title)
                 .fontWeight(.bold)
                 .multilineTextAlignment(.center)
+                // first thing focus should land on, and the thing to jump back to
+                .accessibilityAddTraits(.isHeader)
             
             Text(errorMessage)
                 .font(.body)
@@ -53,6 +56,9 @@ struct ErrorView: View {
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.leading)
             }
+            // "How to fix:" on its own is a dangling fragment — read the heading and
+            // the steps as one passage so a swipe doesn't split them apart
+            .accessibilityElement(children: .combine)
             .padding()
             .background(
                 RoundedRectangle(cornerRadius: 12)

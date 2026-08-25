@@ -88,6 +88,12 @@ struct SpinningAlbumView: View {
             Circle().strokeBorder(theme.rim, lineWidth: theme == .y2k ? 5 : 1)
         )
         .shadow(color: theme == .y2k ? Y2K.purple.opacity(0.5) : .clear, radius: 14)
+        // The whole disc is ornament — groove rings, centre hole, rim, and the
+        // music.note placeholder all read as raw symbol names, and the artwork
+        // carries no information the curved title and artist above it don't
+        // already speak. Take the lot out of the tree rather than labelling
+        // scenery a VoiceOver user would have to swipe past every time.
+        .accessibilityHidden(true)
         .onAppear {
             loadArtwork()
             if shouldSpin { startSpin() }

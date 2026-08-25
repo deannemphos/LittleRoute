@@ -34,6 +34,9 @@ struct QueueDrawerView: View {
                 Color.black.opacity(0.35)
                     .ignoresSafeArea()
                     .onTapGesture { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isOpen = false } }
+                    // a full-screen unlabelled tap target is nothing but a trap in the
+                    // rotor; the grab tab stays on screen while open and closes it too
+                    .accessibilityHidden(true)
             }
 
             HStack(spacing: 0) {
@@ -72,9 +75,26 @@ struct QueueDrawerView: View {
             )
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme == .y2k ? Color.white.opacity(0.7) : Color(.separator), lineWidth: 1))
             .shadow(color: theme == .y2k ? .black.opacity(0.25) : .clear, radius: 3, x: 2)
-            .onTapGesture {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isOpen.toggle() }
-            }
+            .onTapGesture { toggleDrawer() }
+            // The drawer is otherwise reachable only by dragging, which VoiceOver takes
+            // over for its own gestures, so this 20pt tab is the entire non-visual entry
+            // point. Collapse the chevron (which announces as "chevron.compact.right")
+            // into one button-shaped element that says what it opens and how it's sitting.
+            //
+            // The action is spelled out rather than left to ride on the tap gesture above:
+            // a synthesized element's activation reaching a plain .onTapGesture is the
+            // under-specified path, and this is the only way in. Both routes call the same
+            // helper so they can't drift.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Song queue")
+            .accessibilityValue(isOpen ? "Open" : "Closed")
+            .accessibilityHint(isOpen ? "Closes the queue drawer." : "Opens the queue drawer.")
+            .accessibilityAction { toggleDrawer() }
+    }
+
+    private func toggleDrawer() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isOpen.toggle() }
     }
 
     private var drawerContent: some View {
@@ -88,6 +108,9 @@ struct QueueDrawerView: View {
                 )
                 .shadow(color: theme == .y2k ? .white.opacity(0.8) : .clear, radius: 1, y: 1)
                 .padding()
+                // same story as the context label: the y2k stars are spoken aloud
+                .accessibilityLabel("Up next")
+                .accessibilityAddTraits(.isHeader)
 
             ScrollView {
                 LazyVStack(spacing: 8) {
@@ -121,6 +144,10 @@ struct QueueDrawerView: View {
 
     private func queueRow(_ song: Song) -> some View {
         let isCurrent = audioManager.currentSong?.songName == song.songName
+        let artist = song.artist ?? "Unknown Artist"
+        // the speaker glyph is the only thing marking the playing row, and on its own
+        // it reads as its symbol name — fold that state into the row's spoken label
+        let spokenLabel = isCurrent ? "Now playing. \(song.title), \(artist)" : "\(song.title), \(artist)"
         return Button {
             audioManager.play(song: song)
         } label: {
@@ -139,6 +166,7 @@ struct QueueDrawerView: View {
                 if isCurrent {
                     Image(systemName: "speaker.wave.2.fill")
                         .foregroundStyle(rowHighlightText)
+                        .accessibilityHidden(true) // said by the row's label instead
                 }
             }
             .padding(10)
@@ -156,6 +184,8 @@ struct QueueDrawerView: View {
             )
             .overlay(Capsule().strokeBorder(theme == .y2k ? Color.white.opacity(0.8) : .clear, lineWidth: 1))
         }
+        .accessibilityLabel(spokenLabel)
+        .accessibilityHint("Plays this song.")
     }
 
     private var rowText: Color { theme == .y2k ? Y2K.chromeDark : .primary }

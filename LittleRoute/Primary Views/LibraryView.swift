@@ -51,6 +51,7 @@ struct LibraryView: View {
                         Image(systemName: "music.note.house")
                             .font(.system(size: 44))
                             .foregroundStyle(theme.secondaryText)
+                            .accessibilityHidden(true) // the two lines below say it in words
                         Text("No imported songs yet")
                             .font(.headline)
                             .foregroundStyle(theme.primaryText)
@@ -136,10 +137,14 @@ struct LibraryView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(theme == .y2k ? Y2K.chromeDark.opacity(0.7) : .secondary)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .accessibilityHidden(true) // its rotation is the disclosure state, said below
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(song.title), \(song.artist ?? "Unknown Artist")")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the context tags for this song.")
 
             // Context tag chips (collapsible)
             if isExpanded {
@@ -195,6 +200,9 @@ struct LibraryView: View {
                 )
         }
         .buttonStyle(.plain)
+        // whether the tag is on is carried entirely by the capsule fill
+        .accessibilityValue(isTagged ? "On" : "Off")
+        .accessibilityHint("Toggles whether this song plays in the \(context.rawValue) context.")
     }
 
     private func toggleTag(song: Song, context: MusicContext) {
