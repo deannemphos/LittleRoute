@@ -6,13 +6,13 @@ the effort has been run under.
 
 ## State
 
-- Branch: `contexts`, at `2bac746`. Working tree clean. **Nothing has been pushed.**
-- 77 commits ahead of `main`. 32 merge commits.
-- 27 of 32 tasks merged. No unmerged `lr/*` branches.
-- Test suite: 90 tests across `ContextDetectionTests.swift` (65) and
-  `PlaybackTests.swift` (25).
-- SwiftData schema is at **V3**; `LittleRouteApp.makeModelContainer` builds
-  `Schema(versionedSchema: SongSchemaV3.self)`.
+- Branch: `contexts`, at `94e54e6`. Working tree clean. **Nothing has been pushed.**
+- 28 of 32 tasks merged. No unmerged `lr/*` branches.
+- Test suite: ~100 tests across `ContextDetectionTests.swift` and
+  `PlaybackTests.swift`.
+- SwiftData schema is at **V4**; `LittleRouteApp.makeModelContainer` builds
+  `Schema(versionedSchema: SongSchemaV4.self)`. V1–V3 are frozen with nested
+  `Song` classes; V4 points at the live one.
 
 **Nothing in this branch has ever been compiled.** The dev machine is Windows —
 no Xcode, no iOS SDK. Every task was implemented and reviewed by inspection
@@ -20,27 +20,8 @@ only. Expect compile errors; the user has said they will fix them later.
 
 ## Remaining tasks
 
-### LR-15 — Decouple stored context tags from display names
-**In flight** on `lr/15-stable-context-keys` as of this handoff. Verify whether
-it committed before doing anything else; if it produced nothing, re-dispatch.
-
-`Song.locations` stores display raw values (`"Gyms"`, `"Restaurants"`). Renaming
-a case orphans every user tag. Introduce a stable storage key separate from the
-display name and migrate existing rows.
-
-- Freeze `SongSchemaV3` first (transcribe the live `Song`, including
-  `isImported`, into it as a nested class; switch its `models` to
-  `[Self.Song.self]`), then add `SongSchemaV4` pointing at the live class.
-- `.custom` stage with a non-throwing `didMigrate`.
-- The old-display-string → new-key map must be written literally inside the
-  migration stage, not read from the current `MusicContext` enum.
-- Bump `Schema(versionedSchema:)` to V4.
-- Second store of raw values: `ContextDetector.PersistedState` writes
-  `MusicContext` raw values into `UserDefaults` under `contextDetectorState`.
-  Must be handled deliberately.
-
 ### LR-16 — Use the model's identity, not the filename
-**Depends on LR-15.** Schema V5.
+**Next up.** Schema V5.
 
 `songName` is used as identity throughout (`id: \.songName` in list views,
 `firstIndex(where:)` in `play(song:)`). It is user-derived and not unique.
@@ -94,10 +75,10 @@ everything.
 
 ## Sequencing
 
-All five are serial. There is no remaining parallelism.
+All four are serial. There is no remaining parallelism.
 
 ```
-LR-15  →  LR-16  →  LR-19  →  LR-25  →  LR-26
+LR-16  →  LR-19  →  LR-25  →  LR-26
 ```
 
 ## Operating rules
@@ -139,13 +120,22 @@ declined to push so far; the option remains.
 
 ## Known-unverified, highest risk first
 
-1. Three `@Model` classes named `Song` coexist (`SongSchemaV1.Song`,
-   `SongSchemaV2.Song`, top-level `Song`). LR-15 and LR-16 each add another.
-   Whether SwiftData tolerates this is unconfirmed.
-2. LR-17's V2→V3 stage is `.custom` and assumes SwiftData still performs the
+1. **V4 is shape-identical to V3** — LR-15 changed string *contents*, not
+   columns. If SwiftData identifies a store by shape-derived hash, a V3 store is
+   taken for V4 and the V3→V4 stage never runs, leaving `locations` holding
+   display strings that no longer match anything. Detect it by the absence of
+   `context key migration: rewrote tags on N of M songs` in the console on first
+   launch against a pre-LR-15 store. Nothing is destroyed if it happens and the
+   rewrite is idempotent, so the fix is to force a shape difference in V4 and
+   run again. LR-15 chose this over `@Attribute(originalName:)` deliberately:
+   the alternative's failure mode silently destroys the array.
+2. Four `@Model` classes named `Song` coexist (`SongSchemaV1/V2/V3.Song`, plus
+   the top-level one). LR-16 adds a fifth. Whether SwiftData tolerates this is
+   unconfirmed.
+3. LR-17's V2→V3 stage is `.custom` and assumes SwiftData still performs the
    inferred column addition, with `didMigrate` only filling it. If wrong, the
    `isImported` column is never added.
-3. `ContentView.body` was split into eleven computed properties to stay within
+4. `ContentView.body` was split into eleven computed properties to stay within
    the type checker's budget. Untested.
-4. `MKMapItem.identifier` / `.rawValue` accessor spelling (LR-22).
-5. `withAnimation(nil)` cancelling a `repeatForever` animation (LR-18).
+5. `MKMapItem.identifier` / `.rawValue` accessor spelling (LR-22).
+6. `withAnimation(nil)` cancelling a `repeatForever` animation (LR-18).
