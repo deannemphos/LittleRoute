@@ -11,7 +11,12 @@ import SwiftUI
 import AVFoundation
 
 struct SpinningAlbumView: View {
-    @ObservedObject var audioManager: AudioPlayerManager
+    // Plain reference, no wrapper: this view reads isPaused and currentSong, and
+    // with @Observable those two reads are the whole of its dependency on the
+    // manager. That matters more here than anywhere else -- the disc is the view
+    // the progress timer used to invalidate twice a second for nothing, which is
+    // the same invalidation the spin animation below was written to avoid.
+    let audioManager: AudioPlayerManager
 
     let diameter: CGFloat
 

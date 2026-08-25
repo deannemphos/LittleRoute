@@ -11,7 +11,10 @@ import SwiftData
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @ObservedObject private var audioManager = AudioPlayerManager.shared
+    // A plain reference to the singleton: the view doesn't own it, and with
+    // @Observable a wrapper buys nothing -- SwiftUI tracks whichever properties
+    // this body reads on its own.
+    private let audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 

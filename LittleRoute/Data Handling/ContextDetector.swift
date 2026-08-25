@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import MapKit
+import Observation
 
 // The narrow slice of UserDefaults this file touches, behind a protocol for
 // exactly the reason POIProviding and WeatherProviding are: constructing a
@@ -38,7 +39,8 @@ extension UserDefaults: KeyValueStoring {}
 // being jetsammed and relaunched is now routine rather than exotic, and a
 // detector that woke up remembering nothing would hand the user a fresh
 // context reshuffle every time the OS reclaimed some memory.
-class ContextDetector: ObservableObject {
+@Observable
+class ContextDetector {
 
     // MARK: - Configuration
     // Floor on how often we'll actually run an MKLocalSearch. This is a brake,
@@ -120,40 +122,53 @@ class ContextDetector: ObservableObject {
     private let movementSpeedThreshold: CLLocationSpeed = 0.5
 
     // Source of current weather conditions; nil disables weather overrides.
-    private let weatherProvider: WeatherProviding?
+    @ObservationIgnored private let weatherProvider: WeatherProviding?
 
     // MARK: - State
     // The only signal a context switch travels on. There used to be an
     // onContextChange closure alongside it, and the trouble with a closure is
     // that somebody has to keep it fresh: ContentView's captured `songs`, so
     // every import made the capture stale and the view had to remember to
-    // re-assign it. Publishing is enough — an observer reads whatever it needs
+    // re-assign it. Observation is enough — an observer reads whatever it needs
     // at the moment the change lands, and there is no second place to update.
-    @Published private(set) var confirmedContext: MusicContext
-    @Published private(set) var zones: [ContextClassifier.Zone] = []
-    @Published private(set) var contextScores: [MusicContext: Double] = [:]
+    // The move off @Published changed the delivery mechanism and nothing about
+    // this contract: a switch is still announced by assigning here and by
+    // nothing else.
+    private(set) var confirmedContext: MusicContext
+    private(set) var zones: [ContextClassifier.Zone] = []
+    private(set) var contextScores: [MusicContext: Double] = [:]
     // Latest known weather bucket, refreshed each evaluation (heavily cached upstream)
-    @Published private(set) var latestWeather: ContextClassifier.Factors.Condition?
+    private(set) var latestWeather: ContextClassifier.Factors.Condition? = nil
     // Runtime debt per context, 0...ContextClassifier.maxDebt. Only contexts
     // with a nonzero balance are present.
-    @Published private(set) var debts: [MusicContext: Double] = [:]
-    private(set) var candidateContext: MusicContext?
-    private(set) var candidateSince: Date?
-    private(set) var bufferedContext: MusicContext?
-    private(set) var bufferExpiry: Date?
-    private var lastDebtTick: Date?
-    private var lastTickLocation: CLLocation?
+    private(set) var debts: [MusicContext: Double] = [:]
+
+    // Everything from here down is the state machine's own bookkeeping rather
+    // than something a view reads, so it stays out of observation: the macro
+    // would otherwise make every one of these an observable property and charge
+    // registrar traffic for candidate churn that no body has ever looked at.
+    // They remain private(set) where they were — tests read them directly, and
+    // @ObservationIgnored has nothing to do with access control.
+    @ObservationIgnored private(set) var candidateContext: MusicContext? = nil
+    @ObservationIgnored private(set) var candidateSince: Date? = nil
+    @ObservationIgnored private(set) var bufferedContext: MusicContext? = nil
+    @ObservationIgnored private(set) var bufferExpiry: Date? = nil
+    @ObservationIgnored private var lastDebtTick: Date? = nil
+    @ObservationIgnored private var lastTickLocation: CLLocation? = nil
 
     // Weak because the app scope owns the provider and we only borrow it.
     // POIProviding is AnyObject-bound precisely so this can stay weak — a
     // non-class-bound existential has no reference for `weak` to zero out.
-    private weak var poiProvider: (any POIProviding)?
+    // @ObservationIgnored on top of that: this is a dependency slot rather than
+    // view state, and leaving it observable would hand the macro's generated
+    // accessors a weak reference to wrap for no benefit at all.
+    @ObservationIgnored private weak var poiProvider: (any POIProviding)? = nil
 
     // "Running" means our hook is installed on the provider — there is no timer
     // to hold any more. Kept separate from the hook itself because the provider
     // is weak and may already be gone by the time we're torn down.
-    private var isRunning = false
-    private var lastSearchStarted: Date?
+    @ObservationIgnored private var isRunning = false
+    @ObservationIgnored private var lastSearchStarted: Date? = nil
 
     // Where the last successful search was centred, and what it handed back.
     // These two move together on purpose: the displacement gate is really
@@ -168,18 +183,18 @@ class ContextDetector: ObservableObject {
     // disk and skip the search, at the one moment we most want ground truth.
     // Leaving them nil means the first evaluation always searches, which is the
     // behaviour start() was written for.
-    private var lastSearchLocation: CLLocation?
-    private var lastSearchPlaces: [MKMapItem]?
+    @ObservationIgnored private var lastSearchLocation: CLLocation? = nil
+    @ObservationIgnored private var lastSearchPlaces: [MKMapItem]? = nil
 
     // Where persisted state goes, and whether we've already taken it back out.
     // Restoring is once per instance: a stop()/start() cycle inside one process
     // has no gap to rehydrate across, and what's in memory is by definition at
     // least as fresh as the copy on disk.
-    private let store: any KeyValueStoring
-    private var hasRestoredState = false
+    @ObservationIgnored private let store: any KeyValueStoring
+    @ObservationIgnored private var hasRestoredState = false
 
     // Injectable clock for testability
-    var now: () -> Date = { Date() }
+    @ObservationIgnored var now: () -> Date = { Date() }
 
     // weatherProvider has no default on purpose: it used to default to
     // WeatherKitProvider(), which meant every detector — every test detector
@@ -304,10 +319,11 @@ class ContextDetector: ObservableObject {
                 self.clearBuffer() // an explicit user request overrides the anti-flap buffer
 
                 // Same answer as last time, so there is nothing to announce.
-                // The early return earns its keep now that the publish is the
-                // whole signal: @Published fires on every assignment, equal or
-                // not, so writing the same context back would invalidate every
-                // observing view to say nothing.
+                // The early return earns its keep now that the assignment is
+                // the whole signal, and moving to @Observable did not soften
+                // that: withMutation fires on every write, equal or not, just
+                // as @Published did, so writing the same context back would
+                // still invalidate every observing view to say nothing.
                 guard observed != self.confirmedContext else { return }
                 self.confirmedContext = observed
                 print("ContextDetector: manual refresh switched context to \(observed.displayName)")
@@ -324,7 +340,7 @@ class ContextDetector: ObservableObject {
     // machine, because dwell and debt both advance on evaluations and neither
     // one has anything to do with whether we bought fresh POIs this time.
     //
-    // Main thread only: it writes @Published state directly on the gated path.
+    // Main thread only: it writes observable state directly on the gated path.
     // Both callers oblige — start() runs on the app's main actor, and the
     // provider's callback comes off a CLLocationManager delegate created on
     // main.
@@ -403,7 +419,7 @@ class ContextDetector: ObservableObject {
     // Push one set of places through the classifier and into the state machine.
     // Shared by the fresh-search path and the displacement-gated re-score so
     // the two are identical in everything except where the places came from.
-    // Main thread only: writes @Published state.
+    // Main thread only: writes observable state.
     private func apply(places: [MKMapItem],
                        userLocation: CLLocation?,
                        speed: CLLocationSpeed?) {

@@ -11,7 +11,9 @@ import SwiftUI
 import SwiftData
 
 struct QueueDrawerView: View {
-    @ObservedObject var audioManager: AudioPlayerManager
+    // Plain reference, no wrapper -- the drawer's dependency on the manager is
+    // songQueue and currentSong, and @Observable narrows it to exactly those.
+    let audioManager: AudioPlayerManager
 
     @Binding var isOpen: Bool
     @GestureState private var dragOffset: CGFloat = 0.0
