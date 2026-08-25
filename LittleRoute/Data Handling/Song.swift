@@ -8,6 +8,10 @@
 import SwiftData
 import AVFoundation
 
+// The live model, and what SongSchemaV2 points at. Its shape *is* the current
+// store, so changing anything stored below needs a new schema version and a
+// migration stage — and V2 has to be frozen first, or it stops describing the
+// store people already have. See SongSchema.swift.
 @Model
 final class Song {
     var title: String

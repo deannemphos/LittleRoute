@@ -23,15 +23,26 @@ struct LittleRouteApp: App {
     @State private var locationHandler: LocationHandler
     @State private var contextDetector: ContextDetector
 
+    // MARK: - Persistence
+    //
+    // Built from the current VersionedSchema rather than a bare model list, so
+    // the schema carries a version identifier and the migration plan has a
+    // destination to migrate *to*. Item is gone from the schema here; it gets
+    // dropped by the V1 → V2 stage rather than by quietly disappearing from
+    // the list. See SongSchema.swift.
+    //
+    // @TODO: this still fatalErrors, and attaching a migration plan makes that
+    // more likely to fire rather than less — a migration that throws is now
+    // one of the ways container creation can fail, and the user's only
+    // recovery is deleting the app. That's LR-10, not this change.
     var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-            Song.self,
-        ])
+        let schema = Schema(versionedSchema: SongSchemaV2.self)
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema,
+                                      migrationPlan: SongMigrationPlan.self,
+                                      configurations: [modelConfiguration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
