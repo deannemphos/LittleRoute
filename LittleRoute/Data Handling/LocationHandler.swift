@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import MapKit
+import Observation
 
 // Points of interest reference
 // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
@@ -8,19 +9,25 @@ import MapKit
 // POIProviding is the two-member slice ContextDetector talks to; the members
 // below already satisfy it, so conforming here costs nothing and lets the
 // detector be built against a stub instead of a real CLLocationManager.
-class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, POIProviding {
+@Observable
+class LocationHandler: NSObject, CLLocationManagerDelegate, POIProviding {
     // MARK: - Properties
-    private let locationManager = CLLocationManager()
-    
-    // keep this list short: ContentView observes the whole object just to read
-    // authorizationStatus, so anything published here re-invalidates its body.
-    @Published var authorizationStatus: CLAuthorizationStatus?
-    @Published var currentLocation: CLLocation?
+    @ObservationIgnored private let locationManager = CLLocationManager()
 
-    // Deliberately not @Published -- it's a callback slot, not view state.
+    // Both of these are genuine view state, so they stay observable. The note
+    // that used to sit here told you to keep the list short, because ContentView
+    // observed the whole object just to read authorizationStatus and so anything
+    // published alongside it re-invalidated that body. @Observable is what
+    // retired that constraint: SwiftUI now tracks the individual properties a
+    // body actually read, so currentLocation churning on every accepted fix
+    // costs a view that only reads authorizationStatus nothing at all.
+    var authorizationStatus: CLAuthorizationStatus? = nil
+    var currentLocation: CLLocation? = nil
+
+    // Deliberately @ObservationIgnored -- it's a callback slot, not view state.
     // ContextDetector hangs its entire detection pass off this; see the note in
     // didUpdateLocations for why delivery rather than a clock drives detection.
-    var onLocationUpdate: ((CLLocation) -> Void)?
+    @ObservationIgnored var onLocationUpdate: ((CLLocation) -> Void)? = nil
 
     // Throttling: accept a new location only after this much time has passed
     // since the last accepted update, or when the user has moved farther than
@@ -31,16 +38,16 @@ class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, PO
     // note on distanceFilter in init() before deleting it in the name of battery.
     // The distance arm is really just a fast path for vehicles: you have to be
     // covering better than 400m/60s (~24km/h) for it to fire before the clock does.
-    private let updateInterval: TimeInterval = 60
-    private let significantDistance: CLLocationDistance = 400
-    private var lastAcceptedLocation: CLLocation?
-    private var lastAcceptedTime: Date?
+    @ObservationIgnored private let updateInterval: TimeInterval = 60
+    @ObservationIgnored private let significantDistance: CLLocationDistance = 400
+    @ObservationIgnored private var lastAcceptedLocation: CLLocation? = nil
+    @ObservationIgnored private var lastAcceptedTime: Date? = nil
     
     // iOS shows the "keep using in the background?" upgrade prompt exactly once per
     // install, so this stops us re-asking every time the delegate fires. it does not
     // need to persist across launches -- a repeat call is a no-op at the OS level,
     // this just keeps us from spamming it within a session.
-    private var hasRequestedAlwaysUpgrade = false
+    @ObservationIgnored private var hasRequestedAlwaysUpgrade = false
 
     // Init. This used to ask for the maximum possible accuracy to tell close
     // buildings apart (hopefully); it no longer does, and the two properties
