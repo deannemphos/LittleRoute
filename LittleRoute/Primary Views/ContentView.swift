@@ -17,14 +17,11 @@ struct ContentView: View {
     @ObservedObject private var audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
 
-    @ObservedObject private var locationHandler: LocationHandler
-    @ObservedObject private var contextDetector: ContextDetector
-
-    init() {
-        let handler = LocationHandler()
-        self.locationHandler = handler
-        self.contextDetector = ContextDetector(locationHandler: handler)
-    }
+    // Owned by LittleRouteApp and injected, not constructed here: a View can't
+    // own these. Re-initializing ContentView would have built a second
+    // CLLocationManager and reset the detector's dwell/debt/buffer state.
+    @EnvironmentObject private var locationHandler: LocationHandler
+    @EnvironmentObject private var contextDetector: ContextDetector
 
     @Query private var songs: [Song] // Query all songs from the database
     @State private var queueDrawerOpen = false
