@@ -29,6 +29,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     @Published private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
 
+    // The same songs as songQueue, in the order the caller handed them to us, never
+    // shuffled. songQueue is what the drawer renders, so it has to hold the shuffled
+    // order — which left nothing anywhere remembering what the order had been before.
+    // Unshuffling used to filter the shuffled array and get the shuffled array back.
+    //
+    // "The order the caller handed them to us" is as much as we can promise: the views
+    // pass an unsorted @Query, so this is SwiftData's own row order rather than anything
+    // the user chose. It is stable enough for shuffle to round-trip within a session,
+    // which is all this is for — it is not a sort, and shouldn't be mistaken for one.
+    private var orderedQueue: [Song] = []
+
     private var audioPlayer: AVAudioPlayer?
     private var currentIndex: Int = 0 // index of the current song in the queue
     private var playbackTimer: Timer?
@@ -571,12 +582,38 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // and slightly reduce lag if the user reshuffles
     public func toggleShuffle() {
         isShuffled.toggle()
-        
+
         if(isShuffled) {
             songQueue.shuffle()
         } else {
-            reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: songQueue)
+            // Restore the order the songs arrived in. This used to hand the already
+            // shuffled songQueue back to reloadQueue, which filtered it and got the
+            // same shuffled array back out — so turning shuffle off reordered nothing.
+            songQueue = orderedQueue
         }
+
+        // Either way the playing song has just moved to a different slot while
+        // currentIndex stayed pointing at the old one, which would send the next skip
+        // somewhere arbitrary. This was already true of switching shuffle *on*.
+        followCurrentSongInQueue()
+    }
+
+    // Point currentIndex back at whatever is playing after the queue has been reordered
+    // underneath it.
+    //
+    // Deliberately leaves audioPlayer alone: the song hasn't changed, only its position
+    // in the list has, so building a fresh player would restart it from zero — which is
+    // the whole complaint this exists to fix.
+    private func followCurrentSongInQueue() {
+        guard let playing = currentSong,
+              let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) else {
+            // Nothing loaded, or it's no longer in the queue. The top is as good a place
+            // as any to point at, and musicPlayPause will load from there when asked.
+            currentIndex = 0
+            return
+        }
+
+        currentIndex = index
     }
 
     // Prepare the audio player with the selected song
@@ -680,8 +717,24 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // when the caller genuinely wants to move to a different track.
     public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song], keepCurrentSong: Bool = true) {
 
-        // add only the new songs to the queue
-        songQueue = songs.filter { $0.locations.contains(newContext.rawValue) }
+        // shuffle was decoration until now: the body read the isShuffled property and
+        // ignored the argument entirely. Every caller happens to pass isShuffled, so it
+        // never misbehaved — it was just lying in wait for the first caller that didn't.
+        // Kept rather than deleted because removing it means editing five call sites in
+        // ContentView and LibraryView, which another task owns right now. So instead the
+        // argument becomes the answer, and the published flag is made to agree with it:
+        // the order the queue is actually in and the flag the shuffle button lights up
+        // can no longer disagree, whichever way a caller pushes them.
+        if isShuffled != shuffle {
+            isShuffled = shuffle
+        }
+
+        // add only the new songs to the queue, keeping an unshuffled copy of exactly the
+        // same set. This is the only place either array is rebuilt, so it is the only
+        // place they can be made to match — every branch below inherits both, including
+        // the empty one, where the filter leaves each of them empty together.
+        orderedQueue = songs.filter { $0.locations.contains(newContext.rawValue) }
+        songQueue = orderedQueue
 
         // shuffle if user has the option toggled
         if isShuffled {
