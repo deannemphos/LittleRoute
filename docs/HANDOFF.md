@@ -1,110 +1,170 @@
 # LittleRoute Remediation — Handoff
 
 Continuation of `docs/REMEDIATION.md`. That file holds the full 32-task plan and
-the per-task specs. This file records what is done, what is left, and the rules
-the effort has been run under.
+the per-task specs. This file records what is done and what is left.
 
 ## State
 
-- Branch: `contexts`, at `94e54e6`. Working tree clean. **Nothing has been pushed.**
-- 28 of 32 tasks merged. No unmerged `lr/*` branches.
+- Branch: `contexts`, at `fef3adb`. Working tree clean. **Nothing has been pushed.**
+- **32 of 32 tasks merged.** The remediation plan is complete.
 - Test suite: ~100 tests across `ContextDetectionTests.swift` and
   `PlaybackTests.swift`.
-- SwiftData schema is at **V4**; `LittleRouteApp.makeModelContainer` builds
-  `Schema(versionedSchema: SongSchemaV4.self)`. V1–V3 are frozen with nested
-  `Song` classes; V4 points at the live one.
+- SwiftData schema is at **V5**; `LittleRouteApp.makeModelContainer` builds
+  `Schema(versionedSchema: SongSchemaV5.self)`. V1–V4 are frozen with nested
+  `Song` classes; V5 points at the live one.
+- `SWIFT_STRICT_CONCURRENCY = targeted` on both app-target configurations.
+- Diagnostics go through `Logger`/`OSSignposter` (`Data Handling/Logging.swift`),
+  not `print`.
 
 **Nothing in this branch has ever been compiled.** The dev machine is Windows —
 no Xcode, no iOS SDK. Every task was implemented and reviewed by inspection
-only. Expect compile errors; the user has said they will fix them later.
+only. Expect compile errors.
 
-## Remaining tasks
+## The four tasks that closed the plan
 
-### LR-16 — Use the model's identity, not the filename
-**Next up.** Schema V5.
+- **LR-16** — `@Attribute(.unique)` on `Song.songName`, `SongSchemaV5`, and a
+  `willMigrate` dedup stage (the file's only `willMigrate`: a unique constraint
+  cannot be applied to a column already holding duplicates). Views identify
+  songs by `persistentModelID`. Queue matching in `AudioPlayerManager` stays on
+  `songName` deliberately — see the note at `play(song:)`.
+- **LR-19** — all three service classes on `@Observable`, views on `@State`/`let`
+  and `@Environment(Type.self)`. `MapView` now depends on `zones` alone, so the
+  0.5s progress tick no longer invalidates it.
+- **LR-25** — the setting turned on and one real race closed
+  (`WeatherKitProvider`'s guards now run on the same actor as its writes). **No
+  isolation annotations were added**; see the worklist below for why.
+- **LR-26** — 48 `print` calls converted across six files, six logger categories,
+  and `OSSignposter` intervals around POI searches.
 
-`songName` is used as identity throughout (`id: \.songName` in list views,
-`firstIndex(where:)` in `play(song:)`). It is user-derived and not unique.
+## Compile worklist
 
-- Add `@Attribute(.unique)` to `songName`; switch view identity to
-  `persistentModelID`.
-- Needs a **`willMigrate`** that deduplicates before the constraint applies —
-  not `didMigrate`. Applying a unique constraint to a column already holding
-  duplicates fails the migration. `existingSongsByName` in
-  `AudioPlayerManager` documents that duplicates are currently possible.
-- Freeze V4 first, same checklist.
+This is what to expect on the first Mac build, worst first.
 
-### LR-19 — Migrate the observable objects to `@Observable`
-**Must run alone.** Touches every source file.
+### Likely to be errors
 
-`AudioPlayerManager`, `LocationHandler` and `ContextDetector` are Combine
-`ObservableObject`s. `ContentView` observes the audio manager, so the 0.5s
-`currentTime` tick rebuilds the whole body twice a second.
+1. **`AudioPlayerManager.shared` under strict concurrency.** LR-25 declined to
+   mark the class `@MainActor` because the resolution depends on something
+   unknowable here: SwiftUI declares `View` as `@MainActor @preconcurrency` on
+   iOS 17+, so `ContentView`/`LibraryView` may already infer isolation and the
+   problem may not exist — or it may want `@MainActor` spelled out on both
+   structs, or `nonisolated(unsafe) static let shared`. Three plausible answers.
+   If it fires, the one-word fix is `nonisolated(unsafe)`.
+2. **`OSSignposter` API spelling** (`beginInterval(_:id:)` →
+   `OSSignpostIntervalState`, `endInterval(_:_:)`, `makeSignpostID()`,
+   `emitEvent(_:)`). Unverified against the SDK.
+3. **`Logger` privacy interpolation** — written as `\(value, privacy: .public)`,
+   not the older `%{public}` C spelling. Unverified.
+4. **`PersistentIdentifier` / `persistentModelID` spelling** in `LibraryView` and
+   `QueueDrawerView` (LR-16).
+5. **Five `@Model` classes named `Song` coexisting** (V1–V4 nested + live).
+   Whether SwiftData tolerates this is unconfirmed; four already coexisted.
 
-- Convert all three to `@Observable`; views move to `@State`/`let`.
-- `LittleRouteApp` currently injects via `.environmentObject`; there is a
-  `@TODO` there noting this collapses to `.environment` once the classes are
-  `@Observable`. `ContentView` holds them as `@EnvironmentObject`.
-- `ContextDetector` holds `poiProvider` as `weak var (any POIProviding)?`.
-- Done when a progress tick no longer invalidates `MapView`.
+### Expected warnings, deliberately left standing
 
-### LR-25 — Turn on targeted strict concurrency
-**Depends on LR-19.**
+Each is documented in-file at the site.
 
-- Set `SWIFT_STRICT_CONCURRENCY = targeted` in `project.pbxproj` (both app-target
-  configurations), add `@MainActor` where the compiler asks.
-- `AudioPlayerManager` currently uses ~8 `DispatchQueue.main.async` hops that
-  capture non-Sendable `self` in `@Sendable` closures; each will warn under
-  `targeted`. LR-07 chose hops over `@MainActor` because all six unsafe entry
-  points cross an ObjC runtime boundary (`@objc` `AVAudioPlayerDelegate`,
-  `#selector` notification dispatch, `MPRemoteCommand` blocks) where actor
-  isolation is not enforced. If converting to `@MainActor`, those three entry
-  points need `nonisolated` **and must keep their hops**.
-- `static let shared` isolation interacts with `ContentView`/`LibraryView`,
-  which read it from nonisolated stored-property initialisers.
-- pbxproj edits: match tabs exactly, add minimum lines, never reformat.
+6. `AudioPlayerManager` — eight `DispatchQueue.main.async` sites capturing
+   non-`Sendable` `self` in a `@Sendable` closure, plus the
+   `Timer.scheduledTimer` block in `startPlaybackTimer`.
+7. `ContextDetector` — two equivalent captures, in `evaluate()` and
+   `refreshNow()`.
+8. `WeatherProvider` — the `Task { @MainActor in }` capture (same class of
+   diagnostic; predates LR-25, which widened what the closure covers).
+9. `LocationHandler.getPointsOfInterest` — `completion` captured inside
+   `MKLocalSearch.start`'s handler. Depends on whether
+   `MKLocalSearch.CompletionHandler` is `@Sendable` in the iOS 18 SDK.
+10. `SpinningAlbumView.loadArtwork` — `await MainActor.run { … }` captures a
+    non-`Sendable` struct. Resolves together with item 1.
+11. `OSSignpostIntervalState` captured in escaping non-`@Sendable` closures
+    (LR-26) may add one more.
 
-### LR-26 — Replace `print` with structured logging
-**Run last.** Touches every file in `Data Handling/`, so it conflicts with
-everything.
+**Do not chase `complete`-mode diagnostics.** `targeted` will not emit them, and
+the `MigrationStage` statics in `SongSchema.swift` would light up for nothing.
 
-- Adopt `Logger(subsystem:category:)` per subsystem.
-- Add an `OSSignposter` interval around each POI search so battery cost is
-  profilable.
-- Done when no `print` remains in `Data Handling/`.
+### Smaller unknowns
 
-## Sequencing
+- Whether numeric interpolations default to public in `OSLogMessage`. If they
+  don't, ~6 debug/info lines lose their counts; the two protected migration
+  lines are explicit and safe either way.
+- `String(describing: error)` was used because `OSLogMessage` is believed to have
+  no overload for a bare `Error` existential. If it does, this is verbose but not
+  wrong.
+- Whether `import os` is sufficient in all six files.
 
-All four are serial. There is no remaining parallelism.
+## Verify at runtime, not just at compile
 
-```
-LR-16  →  LR-19  →  LR-25  →  LR-26
-```
+1. **The V4→V5 dedup actually runs.** Console, subsystem `nemphos.LittleRoute`,
+   category `migration`: `songName dedup: collapsed N duplicate row(s) across M
+   name(s)`. It fires even at zero, so silence means the stage did not run.
+   **Note it is no longer a `print`** — it will not appear in Xcode's console the
+   way it used to. Filter on the subsystem.
+2. **V4 is shape-identical to V3** (the long-standing LR-15 risk). Detect by the
+   absence of `context key migration: rewrote tags on N of M songs` on first
+   launch against a pre-LR-15 store. Nothing is destroyed if it happens and the
+   rewrite is idempotent; the fix is to force a shape difference and re-run. V5
+   adds a real shape change, which *should* make the V4→V5 transition detectable
+   — reasoning, not observation.
+3. **`willMigrate` semantics** — that its context speaks the *source* schema's
+   models, that `delete` + `save()` inside it is legal, and that the deletions
+   are visible to the constraint application that follows. The whole stage rests
+   on this.
+4. `@Attribute(.unique)` upsert-on-collision behaviour (asserted from docs, not
+   observed). Both insert paths check the name first, so nothing depends on it.
+5. A progress tick should no longer redraw `MapView` — the LR-19 done-criterion,
+   checkable with Self._printChanges() or an Instruments SwiftUI trace.
+6. `MKMapItem.identifier` / `.rawValue` accessor spelling (LR-22).
+7. `withAnimation(nil)` cancelling a `repeatForever` animation (LR-18).
+8. `ContentView.body` was split into eleven computed properties to stay within
+   the type checker's budget. Untested.
+
+## Known follow-ups
+
+- Four `print` calls remain outside `Data Handling/`, deliberately:
+  `LittleRouteApp.swift:135` (container fallback), `ContentView.swift:149` and
+  `LibraryView.swift:131` (import failures) — all natural fits for
+  `Log.library` — and `ErrorView.swift:99`, preview scaffolding that should
+  probably just be deleted.
+- `LocationHandler.didFailWithError` logs at `.error` including
+  `kCLErrorLocationUnknown`, which is spammy. TODO left in place to split that
+  code down to `.debug`.
+- `AudioPlayerManager.addSong` hardcodes `songName: "filename"`, which now
+  collides on the unique key. Dead code; flagged in a comment.
+- LR-25's follow-up: `SWIFT_STRICT_CONCURRENCY = complete`, once `targeted` is
+  clean.
+- The test target does **not** have strict concurrency on. Turning it on would
+  double every diagnostic above while the app target is still dirty.
 
 ## Operating rules
 
-These are what the effort has run on. They exist for reasons that cost work to
+These are what the effort ran on. They exist for reasons that cost work to
 learn.
 
 1. **Agents cannot build.** Every brief must say so explicitly and forbid
    claiming verification. Define done as "diff is complete, minimal, reviewable,
-   and I have stated what I could not check."
-2. **Commit early.** Six agents were killed mid-task by session limits. Those
-   that had committed kept their work; those that hadn't were salvaged by hand
-   from their worktree or lost. Tell every agent to commit as soon as it has
-   something coherent and refine on the same branch.
-3. **One agent per file.** Assign lanes by file, not by task. Name the files
-   other agents own and instruct them to stop and report rather than edit across
-   a boundary. Merge conflicts cannot be caught by a build here.
+   and I have stated what I could not check." Where a task's own done-criterion
+   requires a compiler — LR-25's did — restate it as something reachable rather
+   than letting the agent quietly claim it.
+2. **Commit early.** Eight agents were killed mid-task by session limits across
+   the effort. Those that had committed kept their work. LR-19 was killed twice:
+   the first attempt had committed nothing and lost everything, the second had
+   committed after each file and lost nothing — it died during final
+   verification with all nine commits already on the branch. Tell every agent to
+   branch and make an empty commit *before reading any file*, then commit per
+   file.
+3. **One agent per file.** Assign lanes by file, not by task. Merge conflicts
+   cannot be caught by a build here.
 4. **The specs in `REMEDIATION.md` are stale.** Line numbers are wrong
-   everywhere. File lists have proved incomplete repeatedly. Tell each agent to
-   grep and verify its own file list, and that finding a missed site is the list
-   being wrong, not scope creep.
-5. **Tell each agent what landed underneath it.** Most tasks now depend on
-   changes made after their spec was written. A "what changed underneath you"
-   section prevents rebuilding work that already exists.
+   everywhere. Tell each agent to grep and verify its own file list, and that
+   finding a missed site is the list being wrong, not scope creep. This kept
+   paying: LR-16 found that freezing V4 broke `rewriteLocationsAsContextKeys`
+   the same way LR-15's freeze of V3 had broken `backfillIsImported`.
+5. **Tell each agent what landed underneath it.** Most late tasks depended on
+   changes made after their spec was written. LR-25's spec named a race in
+   `ContextDetector.poll` that LR-12 had already made structurally impossible.
 6. **Verify branches independently.** Check base commit, diff scope, and the
-   specific claim each agent is least sure about, rather than trusting reports.
+   specific claim each agent is least sure about. LR-25 reported "comments only"
+   for three files; that was checkable and true. Its worklist was missing one
+   diagnostic, which review caught (`2c4b64a`).
 7. Tests use Swift Testing (`import Testing`, `@Test`, `#expect`), not XCTest.
    Deployment target iOS 18.1. `PBXFileSystemSynchronizedRootGroup` means new
    `.swift` files need no `project.pbxproj` edit; build settings still do.
@@ -115,27 +175,7 @@ learn.
 `.github/workflows/ios.yml` runs `xcodebuild build-for-testing` and
 `test-without-building` on `macos-latest`. It triggers on push to `main` and on
 pull requests targeting `main`. It has never run on this branch. A draft PR from
-`contexts` to `main` would compile and test all 28 merged tasks. The user has
-declined to push so far; the option remains.
-
-## Known-unverified, highest risk first
-
-1. **V4 is shape-identical to V3** — LR-15 changed string *contents*, not
-   columns. If SwiftData identifies a store by shape-derived hash, a V3 store is
-   taken for V4 and the V3→V4 stage never runs, leaving `locations` holding
-   display strings that no longer match anything. Detect it by the absence of
-   `context key migration: rewrote tags on N of M songs` in the console on first
-   launch against a pre-LR-15 store. Nothing is destroyed if it happens and the
-   rewrite is idempotent, so the fix is to force a shape difference in V4 and
-   run again. LR-15 chose this over `@Attribute(originalName:)` deliberately:
-   the alternative's failure mode silently destroys the array.
-2. Four `@Model` classes named `Song` coexist (`SongSchemaV1/V2/V3.Song`, plus
-   the top-level one). LR-16 adds a fifth. Whether SwiftData tolerates this is
-   unconfirmed.
-3. LR-17's V2→V3 stage is `.custom` and assumes SwiftData still performs the
-   inferred column addition, with `didMigrate` only filling it. If wrong, the
-   `isImported` column is never added.
-4. `ContentView.body` was split into eleven computed properties to stay within
-   the type checker's budget. Untested.
-5. `MKMapItem.identifier` / `.rawValue` accessor spelling (LR-22).
-6. `withAnimation(nil)` cancelling a `repeatForever` animation (LR-18).
+`contexts` to `main` would compile and test all 32 merged tasks — which is now
+the single highest-value action available, since the whole plan is implemented
+and none of it has been through a compiler. The user has declined to push so
+far; the option remains.
