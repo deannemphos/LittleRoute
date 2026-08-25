@@ -69,7 +69,7 @@ struct QueueDrawerView: View {
             .frame(width: tabWidth, height: 110)
             .overlay(
                 Image(systemName: "chevron.compact.right")
-                    .font(.system(size: 18, weight: .bold))
+                    .themedFont(.drawerGlyph, theme: theme)
                     .foregroundStyle(theme == .y2k ? Y2K.chromeDark : Color.secondary)
                     .rotationEffect(.degrees(isOpen ? 180 : 0))
             )
@@ -100,7 +100,7 @@ struct QueueDrawerView: View {
     private var drawerContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(theme == .y2k ? "☆ UP NEXT ☆" : "Up Next")
-                .font(.system(size: 20, weight: theme == .y2k ? .black : .semibold, design: theme == .y2k ? .rounded : .default))
+                .themedFont(.sectionHeader, theme: theme)
                 .foregroundStyle(
                     theme == .y2k
                     ? AnyShapeStyle(LinearGradient(colors: [Y2K.pink, Y2K.purple], startPoint: .leading, endPoint: .trailing))
@@ -154,11 +154,11 @@ struct QueueDrawerView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title)
-                        .font(.system(size: 15, weight: theme == .y2k ? .bold : .medium, design: theme == .y2k ? .rounded : .default))
+                        .themedFont(.rowTitle, theme: theme)
                         .foregroundStyle(isCurrent ? AnyShapeStyle(rowHighlightText) : AnyShapeStyle(rowText))
                         .lineLimit(1)
                     Text(song.artist ?? "Unknown Artist")
-                        .font(.system(size: 12, weight: .medium, design: theme == .y2k ? .rounded : .default))
+                        .themedFont(.rowSubtitle, theme: theme)
                         .foregroundStyle(isCurrent ? AnyShapeStyle(rowHighlightText.opacity(0.85)) : AnyShapeStyle(rowText.opacity(0.7)))
                         .lineLimit(1)
                 }

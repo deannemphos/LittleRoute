@@ -50,7 +50,10 @@ struct SpinningAlbumView: View {
                         .resizable()
                         .scaledToFill()
                 } else if theme == .y2k {
-                    // Iridescent CD look
+                    // Iridescent CD look. The placeholder note is sized off the disc
+                    // rather than off Dynamic Type on purpose: it's a stand-in for
+                    // missing album art, not text, and the disc is already responsive
+                    // to the container — so it grows with the artwork it replaces.
                     AngularGradient(
                         colors: [Y2K.cyan, Y2K.pink, Y2K.lime, Y2K.purple, Y2K.cyan],
                         center: .center

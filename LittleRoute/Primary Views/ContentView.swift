@@ -60,7 +60,7 @@ struct ContentView: View {
 
                 // Wordmark
                 Text("LittleRoute")
-                    .font(.system(size: 38, weight: theme == .y2k ? .black : .semibold, design: theme == .y2k ? .rounded : .default))
+                    .themedFont(.wordmark, theme: theme)
                     .foregroundStyle(theme.titleStyle)
                     .shadow(color: theme == .y2k ? .white.opacity(0.9) : .clear, radius: 0, y: 1)
                     .shadow(color: theme.titleGlow, radius: 6, y: 3)
@@ -71,7 +71,7 @@ struct ContentView: View {
                 ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
 
                 Text(theme == .y2k ? "✧ \(audioManager.currentContext.rawValue) ✧" : audioManager.currentContext.rawValue)
-                    .font(.system(size: 15, weight: theme == .y2k ? .bold : .regular, design: theme == .y2k ? .rounded : .default))
+                    .themedFont(.contextLabel, theme: theme)
                     .foregroundStyle(theme.secondaryText)
                     .shadow(color: theme.titleGlow, radius: 2, y: 1)
                     .padding(.top, 2)
@@ -192,7 +192,7 @@ struct ContentView: View {
                         showLibrary = true
                     } label: {
                         Image(systemName: "music.note.list")
-                            .font(.system(size: 16))
+                            .themedFont(.controlGlyph, theme: theme)
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
@@ -202,7 +202,7 @@ struct ContentView: View {
                         showFileImporter = true
                     } label: {
                         Image(systemName: "plus.circle")
-                            .font(.system(size: 16))
+                            .themedFont(.controlGlyph, theme: theme)
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
@@ -213,7 +213,7 @@ struct ContentView: View {
                         themeRaw = theme.next.rawValue
                     } label: {
                         Image(systemName: "paintbrush.fill")
-                            .font(.system(size: 16))
+                            .themedFont(.controlGlyph, theme: theme)
                             .foregroundStyle(theme.secondaryText)
                             .padding(10)
                     }
