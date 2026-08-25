@@ -463,6 +463,37 @@ private final class StubPOIProvider: POIProviding {
 // Stands in for whatever MKLocalSearch would have failed with.
 private struct StubSearchError: Error {}
 
+// Stands in for UserDefaults: a dictionary, no app domain, no plist, nothing
+// left on disk for the next test to trip over. LR-13 writes on every state
+// transition, so without this every detector in this file would be scribbling
+// into the developer's own defaults -- and reading each other's leftovers back
+// in on start().
+private final class StubStateStore: KeyValueStoring {
+    private var values: [String: Any] = [:]
+
+    func data(forKey defaultName: String) -> Data? { values[defaultName] as? Data }
+    func double(forKey defaultName: String) -> Double { values[defaultName] as? Double ?? 0 }
+    // nil removes, the same way UserDefaults treats it
+    func set(_ value: Any?, forKey defaultName: String) {
+        if let value {
+            values[defaultName] = value
+        } else {
+            values[defaultName] = nil
+        }
+    }
+
+    func removeObject(forKey defaultName: String) { values[defaultName] = nil }
+}
+
+// The test clock, lifted out of makeDetector so more than one detector can read
+// it. A relaunch is two detectors either side of some elapsed time, and time
+// passing *between* them is the entire thing under test -- an `advance` closure
+// that only reached the detector that returned it couldn't express that.
+private final class StubClock {
+    var current = Date(timeIntervalSince1970: 0)
+    func advance(_ interval: TimeInterval) { current = current.addingTimeInterval(interval) }
+}
+
 struct ContextDetectorTests {
 
     // The detector's reference is weak, so whatever we pass has to be owned
@@ -471,19 +502,29 @@ struct ContextDetectorTests {
     // argument was deallocated before the first #expect ever ran.
     private let poiProvider = StubPOIProvider()
 
+    // Fresh per test, like the provider above. Every detector a single test
+    // builds shares both, so two of them stand in for one device either side of
+    // a relaunch: same wall clock, same disk. Tests that build only one are
+    // unaffected -- their `advance` still moves the only clock there is.
+    private let clock = StubClock()
+    private let store = StubStateStore()
+
     private func makeDetector(initial: MusicContext = .all) -> (ContextDetector, (TimeInterval) -> Void) {
         let detector = ContextDetector(
             poiProvider: poiProvider,
             initialContext: initial,
             minimumSearchDisplacement: 50, // the gating tests below are written against this
             dwellDuration: 30,
-            debtAccumulationDuration: 480, // pin explicitly so UserDefaults can't leak into tests
+            debtAccumulationDuration: 480, // pinned rather than read from the store, so the arithmetic below is fixed
             switchBufferDuration: 180,
+            store: store,
             weatherProvider: nil
         )
-        var currentTime = Date(timeIntervalSince1970: 0)
-        detector.now = { currentTime }
-        let advance: (TimeInterval) -> Void = { currentTime = currentTime.addingTimeInterval($0) }
+        // bound to a local so the closures capture the clock rather than the
+        // suite value that happens to be holding it
+        let clock = self.clock
+        detector.now = { clock.current }
+        let advance: (TimeInterval) -> Void = { clock.advance($0) }
         return (detector, advance)
     }
 
@@ -814,5 +855,229 @@ struct ContextDetectorTests {
         detector.tickDebt(isMoving: false)
         #expect(detector.debt(for: .restaurant) == 0)
         #expect(detector.bufferedContext == nil)
+    }
+
+    // MARK: Persistence
+    //
+    // A relaunch here is two detectors over one store and one clock: the first
+    // is the process that got killed, the second is the one that comes back.
+    // Most of these give the provider no location at all, so start() rehydrates
+    // and then returns without evaluating -- which keeps them synchronous and
+    // keeps the restore the only thing being measured.
+
+    @Test func firstLaunchWithNothingSavedKeepsTheInitialContext() {
+        let (detector, _) = makeDetector(initial: .all)
+        detector.start()
+
+        #expect(detector.confirmedContext == .all)
+        #expect(detector.debts.isEmpty)
+        #expect(detector.bufferedContext == nil)
+
+        detector.stop()
+    }
+
+    @Test func relaunchRestoresTheConfirmedContext() {
+        let (first, advance) = makeDetector(initial: .all)
+        first.process(observation: .store)
+        advance(30)
+        first.process(observation: .store)
+        #expect(first.confirmedContext == .store)
+
+        // killed, and back four minutes later
+        advance(240)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        // .store rather than the .all it was constructed with -- which is the
+        // whole point, and also why ContentView has to ask after start() rather
+        // than before it
+        #expect(second.confirmedContext == .store)
+
+        second.stop()
+    }
+
+    @Test func relaunchRestoresDebtDecayedByTheTimeWeWereGone() {
+        let (first, advance) = makeDetector(initial: .restaurant)
+        first.tickDebt(isMoving: true) // primes the tick clock
+        advance(192)
+        first.tickDebt(isMoving: true) // 0.5 * 192/480 = 0.2 owed
+
+        // gone for 96s, which is worth 0.1 of decay at the same rate
+        advance(96)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        #expect(abs(second.debt(for: .restaurant) - 0.1) < 0.0001)
+        // and the ledger came back attached to the right context
+        #expect(second.confirmedContext == .restaurant)
+
+        second.stop()
+    }
+
+    // Unobserved time can pay debt down but never build it: nobody watched the
+    // user walk anywhere while the process wasn't running.
+    @Test func timeAwayDrainsDebtRatherThanAccruingIt() {
+        let (first, advance) = makeDetector(initial: .restaurant)
+        first.tickDebt(isMoving: true)
+        advance(4_800)
+        first.tickDebt(isMoving: true) // pinned at maxDebt
+        #expect(first.debt(for: .restaurant) == ContextClassifier.maxDebt)
+
+        // an hour away is far more than the 8-minute window takes to drain
+        advance(3_600)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        #expect(second.debt(for: .restaurant) == 0)
+        // still inside the staleness cutoff, so the context outlives the debt
+        // it used to carry
+        #expect(second.confirmedContext == .restaurant)
+
+        second.stop()
+    }
+
+    // MARK: Staleness
+
+    @Test func stateOlderThanTheCutoffIsDiscardedRatherThanRestored() {
+        let (first, advance) = makeDetector(initial: .all)
+        first.process(observation: .beach)
+        advance(30)
+        first.process(observation: .beach)
+        #expect(first.confirmedContext == .beach)
+
+        // a night's sleep and then some. Past the cutoff this stops being
+        // evidence about where anybody is now
+        advance(ContextDetector.defaultMaximumRestoreAge + 1)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        #expect(second.confirmedContext == .all) // the launch default, not .beach
+        #expect(second.debts.isEmpty)
+        // and it's cleared rather than merely ignored -- a third launch
+        // shouldn't have to make the same judgement over again
+        #expect(store.data(forKey: ContextDetector.stateDefaultsKey) == nil)
+
+        second.stop()
+    }
+
+    @Test func stateExactlyAtTheCutoffStillRestores() {
+        let (first, advance) = makeDetector(initial: .all)
+        first.process(observation: .beach)
+        advance(30)
+        first.process(observation: .beach) // last write lands here
+
+        advance(ContextDetector.defaultMaximumRestoreAge) // to the second
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        #expect(second.confirmedContext == .beach)
+
+        second.stop()
+    }
+
+    // MARK: What deliberately doesn't survive
+
+    @Test func dwellCandidateDoesNotSurviveARelaunch() {
+        let (first, advance) = makeDetector(initial: .all)
+        first.process(observation: .beach) // candidate opens
+        advance(29)                        // one second short of promotion
+        first.process(observation: .beach)
+        #expect(first.candidateContext == .beach)
+
+        // killed here, back an hour later and possibly a city away
+        advance(3_600)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+        #expect(second.candidateContext == nil)
+        #expect(second.candidateSince == nil)
+
+        // ...so the first thing it sees has to serve the whole window again
+        // rather than cashing in 29 seconds nobody watched
+        second.process(observation: .beach)
+        advance(29)
+        second.process(observation: .beach)
+        #expect(second.confirmedContext == .all)
+        advance(1)
+        second.process(observation: .beach)
+        #expect(second.confirmedContext == .beach)
+
+        second.stop()
+    }
+
+    // LR-21's search cache is in-memory only, so the first evaluation of a new
+    // process always pays for a fresh look instead of answering from results
+    // that were current in a process that no longer exists.
+    @Test @MainActor func relaunchAlwaysSearchesRatherThanReusingTheCache() async {
+        poiProvider.currentLocation = location(metersEast: 0)
+
+        let (first, advance) = makeDetector(initial: .all)
+        first.start()
+        await settle()
+        #expect(poiProvider.searchCount == 1)
+        first.stop()
+
+        // the same spot, well inside the 50m displacement gate: an in-process
+        // fix here would have been re-scored from the cache for free
+        advance(30)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+        await settle()
+        #expect(poiProvider.searchCount == 2)
+
+        second.stop()
+    }
+
+    // MARK: Buffer
+
+    @Test func switchBufferSurvivesARelaunchInsideItsWindow() {
+        let (first, advance) = makeDetector(initial: .restaurant)
+        // A debt-driven switch always has debt behind it -- that's what made it
+        // debt-driven -- and the buffer is released early once that drains, so
+        // a restore has to carry both or neither.
+        first.tickDebt(isMoving: true)
+        advance(192)
+        first.tickDebt(isMoving: true) // 0.2 owed on the restaurant
+        first.process(observation: .store, observationIgnoringDebt: .restaurant)
+        advance(30)
+        first.process(observation: .store, observationIgnoringDebt: .restaurant)
+        #expect(first.bufferedContext == .restaurant)
+
+        // jetsammed 30s into a 180s sentence
+        advance(30)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+        #expect(second.bufferedContext == .restaurant)
+        #expect(second.debt(for: .restaurant) > 0)
+
+        // which is what it's for: start() evaluates immediately, sees the
+        // context we just left, and must not flap straight back into it
+        second.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        advance(30)
+        second.process(observation: .restaurant, observationIgnoringDebt: .restaurant)
+        #expect(second.confirmedContext == .store)
+
+        second.stop()
+    }
+
+    @Test func expiredSwitchBufferIsNotRestored() {
+        let (first, advance) = makeDetector(initial: .restaurant)
+        first.tickDebt(isMoving: true)
+        advance(4_800)
+        first.tickDebt(isMoving: true) // maxDebt, so it can't drain inside the gap below
+        first.process(observation: .store, observationIgnoringDebt: .restaurant)
+        advance(30)
+        first.process(observation: .store, observationIgnoringDebt: .restaurant)
+        #expect(first.bufferedContext == .restaurant)
+
+        // back after the 180s window has run out: no sentence left to serve
+        advance(300)
+        let (second, _) = makeDetector(initial: .all)
+        second.start()
+
+        #expect(second.bufferedContext == nil)
+        #expect(second.debt(for: .restaurant) > 0) // the debt behind it does survive
+        #expect(second.confirmedContext == .store)
+
+        second.stop()
     }
 }
