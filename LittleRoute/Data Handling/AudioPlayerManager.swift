@@ -450,11 +450,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 // and the migration's backfill found no file to match it against.
                 // Guarded rather than assigned, so an ordinary re-import doesn't
                 // dirty a row that already says the right thing.
-                if !existing.isImported {
+                if existing.isImported {
+                    print("Song already exists, skipping record: \(songName)")
+                } else {
                     existing.isImported = true
-                    print("Song already exists, marking it imported: \(songName)")
+                    print("Song already exists, marking the existing record imported: \(songName)")
                 }
-                print("Song already exists, skipping record: \(songName)")
                 continue
             }
 

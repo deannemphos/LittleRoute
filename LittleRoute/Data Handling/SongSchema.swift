@@ -181,7 +181,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
         toVersion: SongSchemaV3.self,
         willMigrate: nil,
         didMigrate: { context in
-            backfillIsImported(in: context)
+            Self.backfillIsImported(in: context)
         }
     )
 
