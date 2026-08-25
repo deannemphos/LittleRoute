@@ -4,6 +4,7 @@
 //
 
 import Testing
+import Foundation
 import MapKit
 import CoreLocation
 import WeatherKit
@@ -69,6 +70,19 @@ struct ContextClassifierTests {
         #expect(parkRadius != nil)
         #expect(restaurantRadius != nil)
         #expect(parkRadius! > restaurantRadius!)
+    }
+
+    @Test func searchRadiusCoversTheWidestProfileWithoutOvershooting() {
+        let widest = ContextClassifier.profiles.values.map(\.effectiveRadius).max()
+        #expect(widest == 600)
+
+        // Anything further out than the widest profile scores zero by
+        // construction, so asking for it is wasted reach. This used to be
+        // double the figure below, and LocationHandler doubled it again into a
+        // 2.4km span — and because MKLocalSearch caps its result set, the
+        // surplus bought a thinner sample of a bigger area rather than more
+        // coverage of the right one.
+        #expect(ContextClassifier.searchRadius == widest)
     }
 
     @Test func specificityRanksUncommonContextsAboveCommonOnes() {
@@ -257,12 +271,24 @@ private final class StubPOIProvider: POIProviding {
     // what the next search hands back -- nothing here touches MapKit
     var searchResult: Result<[MKMapItem], Error> = .success([])
 
+    // how many searches the detector actually spent, and how wide the last one
+    // reached. LR-21 gates the first and halves the second, and neither is
+    // observable from the detector's published state -- the whole point of the
+    // gate is that a skipped search looks identical from the outside.
+    private(set) var searchCount = 0
+    private(set) var lastRequestedRadius: CLLocationDistance?
+
     func getPointsOfInterest(radius: CLLocationDistance,
                              filter: [MKPointOfInterestCategory]?,
                              completion: @escaping (Result<[MKMapItem], Error>) -> Void) {
+        searchCount += 1
+        lastRequestedRadius = radius
         completion(searchResult)
     }
 }
+
+// Stands in for whatever MKLocalSearch would have failed with.
+private struct StubSearchError: Error {}
 
 struct ContextDetectorTests {
 
@@ -276,6 +302,7 @@ struct ContextDetectorTests {
         let detector = ContextDetector(
             poiProvider: poiProvider,
             initialContext: initial,
+            minimumSearchDisplacement: 50, // the gating tests below are written against this
             dwellDuration: 30,
             debtAccumulationDuration: 480, // pin explicitly so UserDefaults can't leak into tests
             switchBufferDuration: 180,
@@ -285,6 +312,20 @@ struct ContextDetectorTests {
         detector.now = { currentTime }
         let advance: (TimeInterval) -> Void = { currentTime = currentTime.addingTimeInterval($0) }
         return (detector, advance)
+    }
+
+    private func location(metersEast: Double) -> CLLocation {
+        CLLocation(latitude: 0, longitude: metersEast / 111_320)
+    }
+
+    // The detector applies search results on the main queue, so let those
+    // blocks drain before asserting on anything they wrote. The main queue is
+    // serial and FIFO, so anything enqueued ahead of this hop has already run
+    // by the time it resumes -- deterministic, unlike a sleep.
+    private func settle() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
     }
 
     // MARK: Lifecycle
@@ -323,6 +364,104 @@ struct ContextDetectorTests {
         // no-op rather than a second subscription
         detector.stop()
         #expect(poiProvider.onLocationUpdate == nil)
+    }
+
+    // MARK: Search gating
+    //
+    // Searches are gated on time (LR-12) and on displacement (LR-21). These
+    // pin down the second: a user who hasn't moved re-scores the places
+    // already in hand instead of buying the same answer again. Every fix is
+    // advanced past the 10s rate limit first, so the time gate can never be
+    // what's doing the work here.
+
+    // Note each of these ends on detector.stop(). That's not just tidiness --
+    // the provider's hook holds the detector weakly, so a detector whose last
+    // use was start() could be released halfway through the test and quietly
+    // take the subscription with it.
+
+    @Test @MainActor func stationaryUserTriggersNoRepeatSearches() async {
+        let (detector, advance) = makeDetector()
+        poiProvider.currentLocation = location(metersEast: 0)
+
+        detector.start() // start() evaluates once rather than sitting blind
+        await settle()
+        #expect(poiProvider.searchCount == 1)
+
+        for _ in 0..<4 {
+            advance(15)
+            poiProvider.onLocationUpdate?(poiProvider.currentLocation!)
+            await settle()
+        }
+
+        #expect(poiProvider.searchCount == 1)
+
+        // ...and the pass itself kept running on the cached places. This is the
+        // half that matters: the dwell window only closes on an evaluation, so
+        // gating the search must never gate the pass. Empty results mean a
+        // .traveling candidate at t0, promoted 30s later without a second
+        // search ever being spent.
+        #expect(detector.confirmedContext == .traveling)
+
+        detector.stop()
+    }
+
+    @Test @MainActor func movingBeyondTheThresholdEarnsAFreshSearch() async {
+        let (detector, advance) = makeDetector()
+        poiProvider.currentLocation = location(metersEast: 0)
+
+        detector.start()
+        await settle()
+        #expect(poiProvider.searchCount == 1)
+
+        // a shuffle across the room stays inside the gate
+        advance(15)
+        poiProvider.currentLocation = location(metersEast: 30)
+        poiProvider.onLocationUpdate?(poiProvider.currentLocation!)
+        await settle()
+        #expect(poiProvider.searchCount == 1)
+
+        // a walk down the block clears it
+        advance(15)
+        poiProvider.currentLocation = location(metersEast: 120)
+        poiProvider.onLocationUpdate?(poiProvider.currentLocation!)
+        await settle()
+        #expect(poiProvider.searchCount == 2)
+
+        detector.stop()
+    }
+
+    // A failed search leaves nothing to re-score, so it must not arm the gate:
+    // otherwise one flaky response would strand a stationary user with no data
+    // until they got up and walked 50m.
+    @Test @MainActor func failedSearchDoesNotArmTheDisplacementGate() async {
+        let (detector, advance) = makeDetector()
+        poiProvider.currentLocation = location(metersEast: 0)
+        poiProvider.searchResult = .failure(StubSearchError())
+
+        detector.start()
+        await settle()
+        #expect(poiProvider.searchCount == 1)
+
+        advance(15)
+        poiProvider.onLocationUpdate?(poiProvider.currentLocation!) // same spot
+        await settle()
+        #expect(poiProvider.searchCount == 2)
+
+        detector.stop()
+    }
+
+    // The classifier owns the radius; this is the detector honouring it rather
+    // than padding it on the way out.
+    @Test @MainActor func detectorAsksForTheClassifierRadius() async {
+        let (detector, _) = makeDetector()
+        poiProvider.currentLocation = location(metersEast: 0)
+
+        detector.start()
+        await settle()
+
+        #expect(poiProvider.lastRequestedRadius == ContextClassifier.searchRadius)
+
+        detector.stop()
     }
 
     // MARK: Dwell
