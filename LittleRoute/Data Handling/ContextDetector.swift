@@ -288,6 +288,8 @@ class ContextDetector {
         // followed by a fix doesn't fire two.
         lastSearchStarted = now()
 
+        // Same off-main completion and the same deliberate hop as evaluate() — and
+        // the same known capture diagnostic, for the same reason. See there.
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
@@ -344,6 +346,21 @@ class ContextDetector {
     // Both callers oblige — start() runs on the app's main actor, and the
     // provider's callback comes off a CLLocationManager delegate created on
     // main.
+    //
+    // That second caller is also the answer to the off-main read this file was
+    // flagged for. The detector used to sample the provider's currentLocation from
+    // a repeating Timer, on whatever thread the timer had been scheduled on, while
+    // the delegate wrote it on main — a read and a write of the same CLLocation
+    // reference with nothing between them. LR-12 retired the clock in favour of the
+    // delivery, so the read now happens *inside* the callback that just performed
+    // the write, on the same thread, and the race went with it. Nothing was left to
+    // fix here; the point is that the fix was structural and is easy to undo by
+    // accident. Reintroducing any timer, queue or detached task that calls
+    // evaluate() puts it straight back.
+    //
+    // Worth being plain that this is the delegate's guarantee and not the
+    // compiler's: nothing in this type is @MainActor, so under strict concurrency
+    // the compiler is taking this comment's word for all of it.
     private func evaluate() {
         guard let poiProvider = poiProvider,
               let location = poiProvider.currentLocation else { return }
@@ -361,6 +378,14 @@ class ContextDetector {
         // override decides the context anyway, so don't burn WeatherKit quota
         // from a moving car. The last known condition is kept until the user
         // slows back down and the fetch resumes.
+        //
+        // latestWeather is observable state being written from a completion
+        // handler, which is only alright because WeatherProviding promises the
+        // completion arrives on main. That promise used to be kept by a hop the
+        // provider made on the way *out*; it is now kept by the provider doing all
+        // of its work on the main actor in the first place. Either way the burden
+        // is on the provider — this closure does not hop, and must not be handed to
+        // an implementation that doesn't keep the contract.
         if (speed ?? 0) <= ContextClassifier.travelingSpeedThreshold {
             weatherProvider?.currentCondition(at: location) { [weak self] condition in
                 self?.latestWeather = condition
@@ -390,6 +415,23 @@ class ContextDetector {
         // and shouldn't spend the budget.
         lastSearchStarted = evaluatedAt
 
+        // The hop below is load-bearing and stays. POIProviding says outright that
+        // results land on whatever queue the search finished on, so this closure is
+        // the one place in the detector that genuinely starts off-main, and
+        // everything it goes on to touch — the gate's baseline, the classifier
+        // output, the state machine, the observable properties apply() writes — is
+        // main-thread-only by the contract above evaluate().
+        //
+        // Known strict-concurrency diagnostic, deliberately left: DispatchQueue's
+        // async takes a @Sendable closure, ContextDetector is a plain @Observable
+        // class and therefore not Sendable, so capturing self here is reported.
+        // The capture is safe for the reason the whole file rests on — one thread
+        // touches this object — and the honest fixes both cost more than the
+        // warning does. Marking the type @MainActor would have to reach start(),
+        // refreshNow(), the tests that drive process() and tickDebt() directly, and
+        // a deinit that cannot call main-actor methods at all; declaring the type
+        // @unchecked Sendable would silence the compiler by asserting something
+        // less true than what is written here.
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
