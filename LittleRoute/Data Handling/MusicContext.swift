@@ -12,31 +12,87 @@ import SwiftUI
 
 // all contexts the music will account for
 //
-// @NOTE: these raw values are what gets written into Song.locations, so a
-// rename here silently orphans every tag the user has already made. Don't
-// touch them without a migration.
+// @NOTE: the raw value here is the *storage key* and nothing else — the string
+// written into Song.locations and into ContextDetector's saved state. It is
+// frozen. Renaming one orphans every tag the user has already made, and putting
+// that right costs a schema version and a custom migration stage; SongSchemaV4
+// is what it looked like the one time it was done, and that stage's map is a
+// literal precisely so a later rename can't retroactively break it.
+//
+// The words a user actually reads are displayName, below. Those are free to
+// change whenever somebody prefers "Gym" to "Gyms" — that split is the whole
+// point. Adding a case is safe; editing a raw value is not.
 enum MusicContext: String {
-    case all = "All"
-    case gym = "Gyms"
-    case restaurant = "Restaurants"
-    case store = "Stores"
-    case park = "Parks"
-    case home = "Home"
-    case work = "Work"
-    case street = "Streets"
-    case driving = "Driving"
-    case beach = "Beaches"
-    case mountain = "Mountains"
-    case city = "Cities"
-    case town = "Towns"
-    case water = "Water"
-    case rainy = "Rainy"       // weather — scores against nearby POIs rather than trumping them
-    case snowy = "Snowy"       // weather — scores against nearby POIs rather than trumping them
-    case traveling = "Traveling" // fallback when no recognizable POI is nearby, or speed > 35mph
+    case all = "all"
+    case gym = "gym"
+    case restaurant = "restaurant"
+    case store = "store"
+    case park = "park"
+    case home = "home"
+    case work = "work"
+    case street = "street"
+    case driving = "driving"
+    case beach = "beach"
+    case mountain = "mountain"
+    case city = "city"
+    case town = "town"
+    case water = "water"
+    case rainy = "rainy"       // weather — scores against nearby POIs rather than trumping them
+    case snowy = "snowy"       // weather — scores against nearby POIs rather than trumping them
+    case traveling = "traveling" // fallback when no recognizable POI is nearby, or speed > 35mph
+}
+
+// MARK: Storage
+//
+// rawValue under a name that says which of its two former jobs it still has.
+// The alias is not ceremony: every call site now reads as either a storage site
+// or a display site, and the ones that persist a context are exactly the ones
+// that must never drift with the UI. It also leaves one place to change if the
+// key ever has to stop being the raw value.
+extension MusicContext {
+
+    // What goes on disk. Frozen — see the @NOTE above.
+    var storageKey: String { rawValue }
+
+    // Reading a stored tag back. nil means the string on disk names no context
+    // we know about, which callers should treat as "leave it alone" rather than
+    // "delete it" — an unrecognised tag is inert, and a dropped one is gone.
+    init?(storageKey: String) {
+        self.init(rawValue: storageKey)
+    }
 }
 
 // MARK: Presentation
 extension MusicContext {
+
+    // What the user reads: chips in the library, the header under the disc, the
+    // map's annotations. Safe to reword at any time — nothing persists it.
+    //
+    // Deliberately no `default:` branch. An exhaustive switch means adding a
+    // case fails to compile until it has been given a label, which is the one
+    // reminder that arrives on its own; a default would quietly hand the new
+    // case somebody else's name.
+    var displayName: String {
+        switch self {
+        case .all: return "All"
+        case .gym: return "Gyms"
+        case .restaurant: return "Restaurants"
+        case .store: return "Stores"
+        case .park: return "Parks"
+        case .home: return "Home"
+        case .work: return "Work"
+        case .street: return "Streets"
+        case .driving: return "Driving"
+        case .beach: return "Beaches"
+        case .mountain: return "Mountains"
+        case .city: return "Cities"
+        case .town: return "Towns"
+        case .water: return "Water"
+        case .rainy: return "Rainy"
+        case .snowy: return "Snowy"
+        case .traveling: return "Traveling"
+        }
+    }
 
     // Shared context accent color, used for map zones and the main view's
     // background tint.

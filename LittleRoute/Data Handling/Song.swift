@@ -8,10 +8,10 @@
 import SwiftData
 import AVFoundation
 
-// The live model, and what SongSchemaV2 points at. Its shape *is* the current
+// The live model, and what SongSchemaV4 points at. Its shape *is* the current
 // store, so changing anything stored below needs a new schema version and a
-// migration stage — and V2 has to be frozen first, or it stops describing the
-// store people already have. See SongSchema.swift.
+// migration stage — and the previous version has to be frozen first, or it
+// stops describing the store people already have. See SongSchema.swift.
 @Model
 final class Song {
     var title: String
@@ -20,8 +20,23 @@ final class Song {
         return title.replacingOccurrences(of: ".mp3", with: "")
     } */
     var artist: String? = nil // optional artist name
-    // @TODO: set possible locations to an enum
-    var locations: [String]                // context in which the song will play
+
+    // Contexts the song will play in, held as MusicContext storage keys.
+    //
+    // Still [String] rather than [MusicContext] because the enum is what the
+    // *app* wants and a plain array of strings is what SwiftData will store
+    // without asking for a Codable box around it — and the box would change the
+    // column's shape, which is a schema version's worth of risk for a type
+    // annotation. The typing that actually matters is bought below instead: read
+    // and write these through isTagged/setTagged and the only strings that ever
+    // reach the array came out of a MusicContext.
+    //
+    // Until LR-15 these were the enum's *display* names ("Gyms"), so renaming a
+    // case for UI reasons orphaned every tag in the store. They're stable keys
+    // now ("gym"); the V3 → V4 stage in SongSchema.swift rewrote the rows that
+    // predate that. The property keeps its old name because renaming it would
+    // change the column, and there is nothing here worth a second migration.
+    var locations: [String]
     // @TODO: set population min/max to be dependent on location automatically
     var populationMin: Int = 0          // minimum population of an area where the song will play
     var populationMax: Int = 1000000000 // maximum population of an area where the song will play -- default overly large
@@ -57,6 +72,48 @@ final class Song {
     // remove class from memory
     deinit {
         // only run this when the user deletes a song
+    }
+}
+
+// MARK: - Context tags
+//
+// The typed way in and out of `locations`. Every reader in the app goes through
+// here, so the only literal context strings left in the codebase are the enum's
+// own raw values and the frozen map inside the migration stage — which is what
+// makes "changing a display name leaves every tag intact" true rather than
+// merely intended.
+extension Song {
+
+    // Whether this song plays in the given context.
+    func isTagged(_ context: MusicContext) -> Bool {
+        locations.contains(context.storageKey)
+    }
+
+    // Add or remove one tag. Idempotent in both directions: tagging something
+    // already tagged is a no-op rather than a second copy of the same key, and
+    // removing clears every copy in case an older write left duplicates behind.
+    //
+    // Doesn't save — the caller owns the ModelContext and knows whether this is
+    // one edit or the middle of a batch.
+    func setTagged(_ context: MusicContext, _ tagged: Bool) {
+        let key = context.storageKey
+        if tagged {
+            guard !locations.contains(key) else { return }
+            locations.append(key)
+        } else {
+            locations.removeAll { $0 == key }
+        }
+    }
+
+    // Every context this song is tagged for, in stored order.
+    //
+    // compactMap rather than map: a key we don't recognise is dropped from this
+    // view of the array but stays in the array itself. That matters — the
+    // migration deliberately leaves strings it can't place alone, and a getter
+    // that quietly deleted them on the way past would finish the job the
+    // migration refused to do.
+    var taggedContexts: [MusicContext] {
+        locations.compactMap(MusicContext.init(storageKey:))
     }
 }
 

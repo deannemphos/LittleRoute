@@ -74,7 +74,8 @@ struct LittleRouteApp: App {
     // to be running against and the destination the plan migrates to. Pointing
     // it at an older one leaves every @Query in the app asking for a model the
     // container was not built for. Bumping it is step 4 of the checklist at the
-    // top of SongSchema.swift; V3 added Song.isImported.
+    // top of SongSchema.swift; V3 added Song.isImported and V4 rewrote
+    // Song.locations from context display names to stable context keys.
     //
     // Both of these are decided together in makeModelContainer(), which is why
     // they're assigned in init() rather than each carrying its own initialiser
@@ -120,7 +121,7 @@ struct LittleRouteApp: App {
     // would be the app doing the exact thing we're trying to spare the user
     // from having to do by hand.
     private static func makeModelContainer() -> (ModelContainer, ModelStoreHealth) {
-        let schema = Schema(versionedSchema: SongSchemaV3.self)
+        let schema = Schema(versionedSchema: SongSchemaV4.self)
 
         do {
             let onDisk = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
