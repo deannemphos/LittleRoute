@@ -22,6 +22,11 @@ import SwiftUI
 // The words a user actually reads are displayName, below. Those are free to
 // change whenever somebody prefers "Gym" to "Gyms" — that split is the whole
 // point. Adding a case is safe; editing a raw value is not.
+//
+// Each raw value is written out even though Swift would synthesize the same
+// string from the case name. Left to synthesis, renaming `gym` to `fitness`
+// would silently move the key too, which is the one edit this whole
+// arrangement exists to make impossible to do by accident.
 enum MusicContext: String {
     case all = "all"
     case gym = "gym"

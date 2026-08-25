@@ -282,11 +282,11 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // would be to walk MusicContext and fold [displayName: storageKey] out of
     // the live enum: half the lines, and wrong, because it asks the *current*
     // enum what the old display names were. The first person to reword a chip
-    // label — the exact
-    // change LR-15 exists to make safe — would then silently change what this
-    // migration believes was on disk in 2026, and every user still upgrading
-    // from a V3 build would lose the tags that label used to name. A migration
-    // is a statement about the past. The past does not get to be recomputed.
+    // label — the exact change LR-15 exists to make safe — would then silently
+    // change what this migration believes was on disk in 2026, and every user
+    // still upgrading from a V3 build would lose the tags that label used to
+    // name. A migration is a statement about the past, and the past does not
+    // get to be recomputed.
     //
     // So: frozen. Adding a MusicContext case later needs nothing here (no V3
     // store can contain a tag that didn't exist yet). Renaming a display name
@@ -310,6 +310,11 @@ enum SongMigrationPlan: SchemaMigrationPlan {
         "Snowy": "snowy",
         "Traveling": "traveling"
     ]
+
+    // The right-hand column, for telling "already migrated" apart from "no idea
+    // what this is" in the log below. Derived from the table rather than from
+    // MusicContext, so it is frozen for the same reason the table is.
+    private static let v3StorageKeys: Set<String> = Set(v3DisplayNameToStorageKey.values)
 
     // Rewrite every row's tags in place.
     //
@@ -353,8 +358,19 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             var seen: Set<String> = []
             var updated: [String] = []
             for stored in song.locations {
-                let key = v3DisplayNameToStorageKey[stored] ?? stored
-                if v3DisplayNameToStorageKey[stored] == nil { unrecognised.insert(stored) }
+                let mapped = v3DisplayNameToStorageKey[stored]
+                // "already a key" and "we have no idea what this is" both fall
+                // through the lookup, and only the second is worth a log line —
+                // otherwise a re-run would report the whole library as junk.
+                // Checked against the table's own values, so this stays as
+                // frozen as the table is.
+                if mapped == nil, !v3StorageKeys.contains(stored) {
+                    unrecognised.insert(stored)
+                }
+                let key = mapped ?? stored
+                // second and later copies of the same tag are worth nothing;
+                // insert(_:).inserted is false for them, and order is preserved
+                // for the ones that survive
                 guard seen.insert(key).inserted else { continue }
                 updated.append(key)
             }
@@ -367,7 +383,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
 
         if !unrecognised.isEmpty {
             // sorted so the line is stable between runs and worth diffing
-            print("context key migration: kept \(unrecognised.count) tag(s) that name no context, verbatim: \(unrecognised.sorted())")
+            print("context key migration: kept \(unrecognised.count) distinct tag(s) naming no context, verbatim: \(unrecognised.sorted())")
         }
 
         do {
