@@ -461,23 +461,6 @@ class ContextDetector {
         // and shouldn't spend the budget.
         lastSearchStarted = evaluatedAt
 
-        // The hop below is load-bearing and stays. POIProviding says outright that
-        // results land on whatever queue the search finished on, so this closure is
-        // the one place in the detector that genuinely starts off-main, and
-        // everything it goes on to touch — the gate's baseline, the classifier
-        // output, the state machine, the observable properties apply() writes — is
-        // main-thread-only by the contract above evaluate().
-        //
-        // Known strict-concurrency diagnostic, deliberately left: DispatchQueue's
-        // async takes a @Sendable closure, ContextDetector is a plain @Observable
-        // class and therefore not Sendable, so capturing self here is reported.
-        // The capture is safe for the reason the whole file rests on — one thread
-        // touches this object — and the honest fixes both cost more than the
-        // warning does. Marking the type @MainActor would have to reach start(),
-        // refreshNow(), the tests that drive process() and tickDebt() directly, and
-        // a deinit that cannot call main-actor methods at all; declaring the type
-        // @unchecked Sendable would silence the compiler by asserting something
-        // less true than what is written here.
         // The interval that makes the cost of location polling readable, and the
         // argument for putting it here rather than one layer down.
         //
@@ -506,6 +489,23 @@ class ContextDetector {
         let searchState = Log.poiSearch.beginInterval("POI Search",
                                                       id: Log.poiSearch.makeSignpostID())
 
+        // The hop below is load-bearing and stays. POIProviding says outright that
+        // results land on whatever queue the search finished on, so this closure is
+        // the one place in the detector that genuinely starts off-main, and
+        // everything it goes on to touch — the gate's baseline, the classifier
+        // output, the state machine, the observable properties apply() writes — is
+        // main-thread-only by the contract above evaluate().
+        //
+        // Known strict-concurrency diagnostic, deliberately left: DispatchQueue's
+        // async takes a @Sendable closure, ContextDetector is a plain @Observable
+        // class and therefore not Sendable, so capturing self here is reported.
+        // The capture is safe for the reason the whole file rests on — one thread
+        // touches this object — and the honest fixes both cost more than the
+        // warning does. Marking the type @MainActor would have to reach start(),
+        // refreshNow(), the tests that drive process() and tickDebt() directly, and
+        // a deinit that cannot call main-actor methods at all; declaring the type
+        // @unchecked Sendable would silence the compiler by asserting something
+        // less true than what is written here.
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
