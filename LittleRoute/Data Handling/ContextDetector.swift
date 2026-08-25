@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import MapKit
 import Observation
+import os
 
 // The narrow slice of UserDefaults this file touches, behind a protocol for
 // exactly the reason POIProviding and WeatherProviding are: constructing a
@@ -288,12 +289,28 @@ class ContextDetector {
         // followed by a fix doesn't fire two.
         lastSearchStarted = now()
 
+        // Signposted separately from the automatic path, and named so a trace can
+        // tell them apart. A manual refresh is the one search that is allowed to
+        // ignore both gates, so in an Instruments run it is the search that has an
+        // obvious excuse — mixing it in with the automatic ones would inflate the
+        // very number the gates exist to bring down.
+        let searchState = Log.poiSearch.beginInterval("POI Search (Manual)",
+                                                      id: Log.poiSearch.makeSignpostID())
+
         // Same off-main completion and the same deliberate hop as evaluate() — and
         // the same known capture diagnostic, for the same reason. See there.
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
         ) { [weak self] result in
+            // Ended before the guard, not after it. The guard has two ways to
+            // return — a deallocated detector and a failed search — and an
+            // interval that is only closed on the success path is worse than no
+            // interval at all, because Instruments draws an unterminated one as
+            // running until the end of the trace. Closing here also makes the
+            // interval mean exactly one thing: how long MapKit took.
+            Log.poiSearch.endInterval("POI Search (Manual)", searchState)
+
             guard let self = self, case .success(let places) = result else { return }
             DispatchQueue.main.async {
                 // Every exit from here has moved something worth keeping — the
@@ -328,7 +345,13 @@ class ContextDetector {
                 // still invalidate every observing view to say nothing.
                 guard observed != self.confirmedContext else { return }
                 self.confirmedContext = observed
-                print("ContextDetector: manual refresh switched context to \(observed.displayName)")
+                // .notice, like its twin in process(). A switch is the entire
+                // output of this type and it is rare — gated by dwell, or by
+                // somebody deliberately tapping a button, as here. It is also the
+                // only line in the app that answers "why did the music change",
+                // and that question is usually asked hours later, which rules out
+                // the two levels that don't reach the disk.
+                Log.context.notice("ContextDetector: manual refresh switched context to \(observed.displayName, privacy: .public)")
             }
         }
     }
@@ -406,6 +429,29 @@ class ContextDetector {
         // is skipped.
         if let lastSearchLocation, let lastSearchPlaces,
            location.distance(from: lastSearchLocation) < minimumSearchDisplacement {
+            // A signpost *event* for the search that didn't happen, and it is
+            // the reason the signposting lives in this file rather than in
+            // LocationHandler — see the long note on the interval below. A gated
+            // pass is indistinguishable from an evaluation that never ran, so
+            // without this the gate's saving shows up in a trace as an absence,
+            // and an absence is exactly what a regression in the gate would look
+            // like too. One event per skip turns "the searches got cheaper" into
+            // "here are the searches we declined, and here is where you were
+            // standing when we declined them".
+            //
+            // Only this gate gets an event, not the rate limit above it. The rate
+            // limit returns before the state machine has advanced at all, so
+            // nothing whatsoever happened on that pass and there is nothing to
+            // attribute; it is also a fixed interval, so its saving is arithmetic
+            // rather than a measurement. This gate is the one that depends on how
+            // the user moved, which is the number nobody can predict from the
+            // code.
+            //
+            // Deliberately carries no payload. The interesting quantity is the
+            // count, and the only richer thing to say — how far short of the
+            // threshold we fell — is a distance from the user's current position,
+            // which is the one class of value this task agreed not to write down.
+            Log.poiSearch.emitEvent("POI Search Skipped")
             apply(places: lastSearchPlaces, userLocation: location, speed: speed)
             return
         }
@@ -432,10 +478,46 @@ class ContextDetector {
         // a deinit that cannot call main-actor methods at all; declaring the type
         // @unchecked Sendable would silence the compiler by asserting something
         // less true than what is written here.
+        // The interval that makes the cost of location polling readable, and the
+        // argument for putting it here rather than one layer down.
+        //
+        // LocationHandler.getPointsOfInterest is where MKLocalSearch actually
+        // starts, so that looks like the obvious home for it, and it is the wrong
+        // one for three reasons. The first is the gate immediately above: a
+        // skipped search never calls the provider at all, so an interval down
+        // there can only ever describe the searches that ran. It would report a
+        // gated build and an ungated one identically except for the count, and
+        // leave you to infer the saving from a number that also moves when the
+        // user simply walks less. Both halves of the story have to come off the
+        // same signposter to be comparable, and only one of the two files knows
+        // both halves.
+        //
+        // The second is that the provider has an early return of its own — no
+        // current location, no search — so an interval opened on entry there
+        // would sometimes wrap nothing and drag the mean down. The third is that
+        // POIProviding exists to be stubbed, and an interval attached to the
+        // protocol's caller measures the seam the app actually runs on rather
+        // than one particular implementation of it.
+        //
+        // What this measures is therefore "how long from the detector asking to
+        // the detector being answered", which includes the provider's own region
+        // arithmetic and dispatch. That is deliberate: the question being
+        // profiled is what one evaluation costs, not what MapKit costs.
+        let searchState = Log.poiSearch.beginInterval("POI Search",
+                                                      id: Log.poiSearch.makeSignpostID())
+
         poiProvider.getPointsOfInterest(
             radius: searchRadius,
             filter: Array(ContextClassifier.categoryMap.keys)
         ) { [weak self] result in
+            // First statement in the closure, ahead of the guard and outside the
+            // switch, so that all three exits — a deallocated detector, a
+            // success and a failure — close it. An interval left open is drawn
+            // as still running for the remainder of the trace, which would make
+            // a torn-down detector look like the most expensive search in the
+            // run. Static, so it needs no self and survives the guard below.
+            Log.poiSearch.endInterval("POI Search", searchState)
+
             guard let self = self else { return }
             switch result {
             case .success(let places):
@@ -453,7 +535,15 @@ class ContextDetector {
                 // machine — and deliberately leave the gate's baseline where
                 // it was, so the next fix gets to retry instead of the user
                 // having to walk 50m to earn one.
-                print("ContextDetector POI search failed: \(error)")
+                //
+                // .error even though the code above treats it as survivable, and
+                // the two are not in tension: the recovery is automatic, but the
+                // failure is still the reason the context stopped tracking, and
+                // it is swallowed here and nowhere else. If searches are failing
+                // steadily — a revoked MapKit entitlement, no network — the app
+                // just quietly stops detecting anything, and this line is the
+                // only place that ever says so.
+                Log.context.error("ContextDetector POI search failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
@@ -603,7 +693,11 @@ class ContextDetector {
             confirmedContext = observedContext
             candidateContext = nil
             candidateSince = nil
-            print("ContextDetector: switched context to \(observedContext.displayName)")
+            // The headline event of the whole app, and rare by construction —
+            // nothing reaches this line without clearing the dwell window. See
+            // the twin in refreshNow() for why .notice and why the name is
+            // readable in release.
+            Log.context.notice("ContextDetector: switched context to \(observedContext.displayName, privacy: .public)")
         }
     }
 
