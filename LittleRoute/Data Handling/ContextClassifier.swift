@@ -86,8 +86,23 @@ struct ContextClassifier {
         .city: Profile(effectiveRadius: 400, specificity: 0.90, debt: 0.0),
     ]
 
+    // How far out the POI search has to reach: far enough that the widest
+    // profile above (600m — beach and park) can still be scored from its own
+    // edge, and no further. Nothing beyond that can contribute a nonzero
+    // proximity, so nothing beyond that is worth asking for.
+    //
+    // This used to double that figure, and LocationHandler doubled it again
+    // turning the query into a 2.4km square. MKLocalSearch caps how many
+    // results it hands back, so the surplus reach didn't buy more coverage —
+    // it bought an arbitrary sample of a much larger area, and the cafe across
+    // the street could simply be absent from it. That made it an accuracy bug
+    // before it was ever a cost one.
+    //
+    // Note this is a *radius*. MKCoordinateRegion wants a span, so the one
+    // surviving factor of two lives in LocationHandler.getPointsOfInterest
+    // where it's a unit conversion rather than padding.
     static var searchRadius: CLLocationDistance {
-        (profiles.values.map(\.effectiveRadius).max() ?? 100) * 2
+        profiles.values.map(\.effectiveRadius).max() ?? 100
     }
 
     //@TODO: Bring back the old context categories and allow users to customize their own context pools
