@@ -278,10 +278,11 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // What `locations` said in a V3 store, and what each of those means now.
     //
     // Every string on both sides is a literal, and that is the load-bearing
-    // property of this table — not a stylistic one. The obvious way to write
-    // this would be `MusicContext.allCases.reduce { $0[$1.displayName] = $1.rawValue }`,
-    // which reads better and is wrong: it asks the *current* enum what the old
-    // display names were. The first person to reword a chip label — the exact
+    // property of this table — not a stylistic one. The obvious way to write it
+    // would be to walk MusicContext and fold [displayName: storageKey] out of
+    // the live enum: half the lines, and wrong, because it asks the *current*
+    // enum what the old display names were. The first person to reword a chip
+    // label — the exact
     // change LR-15 exists to make safe — would then silently change what this
     // migration believes was on disk in 2026, and every user still upgrading
     // from a V3 build would lose the tags that label used to name. A migration

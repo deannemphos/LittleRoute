@@ -353,7 +353,10 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
                     // isImported: false — this file ships inside the app bundle,
                     // so there is nothing in Documents/Music for the user to
                     // manage or delete. It plays; it doesn't appear in My Music.
-                    let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: ["All"], populationMin: 0, populationMax: 10000000, isImported: false)
+                    // MusicContext.all.storageKey, not the literal "All" this
+                    // used to be: locations holds storage keys now, and a
+                    // hand-typed one is a tag that matches nothing.
+                    let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 10000000, isImported: false)
                     modelContext.insert(newSong)
 
                     // Fold the new song into the index before moving on. Two files in the
@@ -476,7 +479,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
             // isImported: true — we have just copied this file into
             // Documents/Music ourselves. This is the one place that claim is made.
-            let newSong = Song(title: title, songName: songName, artist: artist, locations: ["All"], populationMin: 0, populationMax: 10000000, isImported: true)
+            let newSong = Song(title: title, songName: songName, artist: artist, locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 10000000, isImported: true)
             modelContext.insert(newSong)
             // and the rest of the batch now knows about it — see the note above the fetch.
             // The model's own songName, not the local one, so the index says what the store
@@ -735,7 +738,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // @TODO: Add field for uploading .mp3 files
     // @TODO: figure out how to handle the population detection issue
     public func addSong(title: String, artist: String, modelContext: ModelContext) {
-        let newSong = Song(title: title, songName: "filename", artist: artist, locations: ["location"], populationMin: 0, populationMax: 9999)
+        // "location" was never a context — this stub has been writing a tag that
+        // matches nothing since it was typed. It is unreferenced, so nothing has
+        // ever run it; still, a placeholder that writes junk into the store is
+        // worse than one that writes something inert but real.
+        let newSong = Song(title: title, songName: "filename", artist: artist, locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 9999)
         modelContext.insert(newSong)
         try? modelContext.save()
     }
@@ -812,7 +819,7 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         // same set. This is the only place either array is rebuilt, so it is the only
         // place they can be made to match — every branch below inherits both, including
         // the empty one, where the filter leaves each of them empty together.
-        orderedQueue = songs.filter { $0.locations.contains(newContext.rawValue) }
+        orderedQueue = songs.filter { $0.isTagged(newContext) }
         songQueue = orderedQueue
 
         // shuffle if user has the option toggled

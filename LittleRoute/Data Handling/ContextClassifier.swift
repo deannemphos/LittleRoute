@@ -267,7 +267,10 @@ struct ContextClassifier {
             zones.append(
                 Zone(
                     id: zoneID(for: item, context: context),
-                    name: item.name ?? context.rawValue,
+                    // the zone's name is drawn on the map and read out by
+                    // VoiceOver, so an unnamed POI falls back to the label
+                    // rather than the storage key
+                    name: item.name ?? context.displayName,
                     coordinate: item.placemark.coordinate,
                     context: context,
                     radius: profile.effectiveRadius,
@@ -322,10 +325,17 @@ struct ContextClassifier {
         )
     }
 
+    // Dictionary order is unspecified, so an exact tie needs a tiebreak or the
+    // same two scores pick different winners on different runs. Broken on the
+    // storage key rather than the display name: which context wins a tie is
+    // classification behaviour, and rewording a chip label has no business
+    // reshuffling it. (It does mean today's tiebreak order differs from the
+    // pre-LR-15 one — "gym" sorts against "restaurant" now rather than "Gyms"
+    // against "Restaurants" — which only shows up on exactly equal scores.)
     private static func winner(of scores: [MusicContext: Double]) -> MusicContext? {
         scores.max { lhs, rhs in
             if lhs.value == rhs.value {
-                return lhs.key.rawValue > rhs.key.rawValue
+                return lhs.key.storageKey > rhs.key.storageKey
             }
             return lhs.value < rhs.value
         }?.key
@@ -361,7 +371,10 @@ struct ContextClassifier {
         let coordinate = item.placemark.coordinate
         let latitude = String(format: "%.4f", coordinate.latitude)
         let longitude = String(format: "%.4f", coordinate.longitude)
-        // prefixed so a coordinate-derived ID can never collide with a MapKit one
-        return "geo-\(context.rawValue)-\(latitude)-\(longitude)-\(item.name ?? "")"
+        // prefixed so a coordinate-derived ID can never collide with a MapKit
+        // one, and built from the storage key rather than the label — an
+        // identity that moved when somebody reworded a chip would be no
+        // identity at all
+        return "geo-\(context.storageKey)-\(latitude)-\(longitude)-\(item.name ?? "")"
     }
 }
