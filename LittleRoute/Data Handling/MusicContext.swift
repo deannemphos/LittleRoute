@@ -30,8 +30,8 @@ enum MusicContext: String {
     case city = "Cities"
     case town = "Towns"
     case water = "Water"
-    case rainy = "Rainy"       // weather override — trumps location-based contexts
-    case snowy = "Snowy"       // weather override — trumps location-based contexts
+    case rainy = "Rainy"       // weather — scores against nearby POIs rather than trumping them
+    case snowy = "Snowy"       // weather — scores against nearby POIs rather than trumping them
     case traveling = "Traveling" // fallback when no recognizable POI is nearby, or speed > 35mph
 }
 
