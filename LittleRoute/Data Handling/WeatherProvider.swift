@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import WeatherKit
+import os
 
 // Abstraction over the weather source so ContextDetector stays testable and
 // the app degrades gracefully when WeatherKit is unavailable.
@@ -68,7 +69,11 @@ final class WeatherKitProvider: WeatherProviding {
         // One line per launch so the feature is at least visible in the
         // console before anything has had a chance to fail. Whether it
         // actually works is answered by the first fetch, either way.
-        print("WeatherKitProvider: active — weather overrides require the WeatherKit capability on this App ID.")
+        //
+        // .info rather than .debug precisely because of that "one line per
+        // launch": debug lines are dropped from the persisted log, and this one
+        // is meant to still be there when somebody goes looking after the fact.
+        Log.weather.info("WeatherKitProvider: active — weather overrides require the WeatherKit capability on this App ID.")
     }
 
     // The hop onto the main actor is now the *first* thing that happens rather than
@@ -160,7 +165,9 @@ final class WeatherKitProvider: WeatherProviding {
         consecutiveFailures = 0
         guard !everSucceeded else { return }
         everSucceeded = true
-        print("WeatherKitProvider: first successful fetch — WeatherKit is provisioned; weather overrides are live.")
+        // The positive half of the verdict, and it happens once. Same level as
+        // the launch line for the same reason.
+        Log.weather.info("WeatherKitProvider: first successful fetch — WeatherKit is provisioned; weather overrides are live.")
     }
 
     private func noteFailure(_ error: Error) {
@@ -170,22 +177,39 @@ final class WeatherKitProvider: WeatherProviding {
            !diagnosedUnprovisioned,
            consecutiveFailures >= Self.unprovisionedFailureThreshold {
             diagnosedUnprovisioned = true
-            print("""
+            // .error, and it is the only level that fits: this is the moment a
+            // whole feature is declared dead for the rest of the launch, and
+            // .error is the lowest level the system persists to disk without
+            // being asked. A verdict nobody can retrieve afterwards is not a
+            // verdict. It fires at most once, so it costs nothing to keep.
+            //
+            // Everything interpolated here is deliberately readable in release —
+            // a bundle identifier is not user data, and an error that reads
+            // <private> would leave this line asserting a diagnosis with the
+            // evidence blacked out.
+            Log.weather.error("""
                 WeatherKitProvider: WEATHER DISABLED — \(consecutiveFailures) failed fetches, \
                 none successful this launch. That pattern means WeatherKit is not provisioned \
-                for \(Bundle.main.bundleIdentifier ?? "this bundle") rather than that the network \
+                for \(Bundle.main.bundleIdentifier ?? "this bundle", privacy: .public) rather than that the network \
                 is flaky. The .rainy and .snowy contexts cannot fire until the WeatherKit \
                 capability is enabled for this App ID in the Apple Developer portal and the app \
-                is re-signed with a refreshed profile. Last error: \(error)
+                is re-signed with a refreshed profile. Last error: \(String(describing: error), privacy: .public)
                 """)
             return
         }
 
         // Ordinary noise, and only while the verdict is still open. Once
-        // we've diagnosed, stop reprinting the same error every poll —
+        // we've diagnosed, stop repeating the same error every poll —
         // that spam is what made the original line easy to ignore.
+        //
+        // .debug says the same thing the surrounding logic already says: these
+        // are the failures we have not yet decided mean anything. Debug lines
+        // are dropped unless someone has turned the category up, which is
+        // exactly the treatment a line described in its own comment as noise
+        // deserves — and if the pattern turns out to be conclusive, the .error
+        // above is the one that survives to say so.
         if !diagnosedUnprovisioned {
-            print("WeatherKitProvider: fetch failed (\(consecutiveFailures) in a row): \(error)")
+            Log.weather.debug("WeatherKitProvider: fetch failed (\(consecutiveFailures) in a row): \(String(describing: error), privacy: .public)")
         }
     }
 
