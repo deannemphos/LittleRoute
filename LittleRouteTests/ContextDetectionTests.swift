@@ -485,6 +485,20 @@ private final class StubStateStore: KeyValueStoring {
     func removeObject(forKey defaultName: String) { values[defaultName] = nil }
 }
 
+// A blob in the shape a pre-LR-15 build wrote: MusicContext *display* names,
+// and no version field at all. Transcribed rather than reached for, because
+// ContextDetector.PersistedState is private and — more to the point — because
+// this is a description of what old builds put on disk, and that has stopped
+// moving. Rebuilding it from the current struct would make the test agree with
+// whatever the code does next, which is the opposite of what it's for.
+private struct LegacyPersistedState: Codable {
+    let confirmedContext: String
+    let debts: [String: Double]
+    let bufferedContext: String?
+    let bufferExpiry: Date?
+    let savedAt: Date
+}
+
 // The test clock, lifted out of makeDetector so more than one detector can read
 // it. A relaunch is two detectors either side of some elapsed time, and time
 // passing *between* them is the entire thing under test -- an `advance` closure
@@ -958,6 +972,35 @@ struct ContextDetectorTests {
         #expect(store.data(forKey: ContextDetector.stateDefaultsKey) == nil)
 
         second.stop()
+    }
+
+    // LR-15 respelt every context on disk, so a blob written by the build
+    // before it says "Beaches" where this one says "beach". Left to decode, all
+    // of it would parse and none of it would map: the confirmed context
+    // reverting to the launch default and the ledger coming back empty, while
+    // savedAt and bufferExpiry sailed through looking authoritative. The version
+    // field is what makes that visible, and the answer is to throw the whole
+    // blob away rather than restore the half of it that still parses.
+    @Test func stateFromBeforeTheContextKeySplitIsDiscardedWholesale() throws {
+        let legacy = LegacyPersistedState(
+            confirmedContext: "Beaches",      // .beach, in the old spelling
+            debts: ["Restaurants": 0.3],
+            bufferedContext: nil,
+            bufferExpiry: nil,
+            savedAt: clock.current            // fresh, so staleness isn't what rejects it
+        )
+        store.set(try JSONEncoder().encode(legacy), forKey: ContextDetector.stateDefaultsKey)
+
+        let (detector, _) = makeDetector(initial: .all)
+        detector.start()
+
+        #expect(detector.confirmedContext == .all) // the launch default, not .beach
+        #expect(detector.debts.isEmpty)
+        // and cleared, so a build that will never accept it doesn't re-read and
+        // re-reject it on every launch
+        #expect(store.data(forKey: ContextDetector.stateDefaultsKey) == nil)
+
+        detector.stop()
     }
 
     @Test func stateExactlyAtTheCutoffStillRestores() {

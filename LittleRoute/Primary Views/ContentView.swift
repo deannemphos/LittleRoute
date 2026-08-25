@@ -260,7 +260,7 @@ struct ContentView: View {
             // Spinny circle tinted to the active context
             ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
 
-            Text(theme == .y2k ? "✧ \(audioManager.currentContext.rawValue) ✧" : audioManager.currentContext.rawValue)
+            Text(theme == .y2k ? "✧ \(audioManager.currentContext.displayName) ✧" : audioManager.currentContext.displayName)
                 .themedFont(.contextLabel, theme: theme)
                 .foregroundStyle(theme.secondaryText)
                 .shadow(color: theme.titleGlow, radius: 2, y: 1)
@@ -271,7 +271,7 @@ struct ContentView: View {
                 .padding(.horizontal, Layout.screenMargin)
                 // the y2k sparkles are read out as "white four pointed star" twice,
                 // and a bare "Gyms" doesn't say what it is. Say both.
-                .accessibilityLabel("Current context, \(audioManager.currentContext.rawValue)")
+                .accessibilityLabel("Current context, \(audioManager.currentContext.displayName)")
         }
     }
 

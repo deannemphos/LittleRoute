@@ -39,6 +39,11 @@
 //    - the isOtherAudioPlaying half of startPlaybackIfNothingElseIsPlaying,
 //      which is a property of the device, not of this class.
 //
+//  A second suite at the bottom covers Song's context tags, which is what the
+//  queue filter is really asking about — it lives here rather than in its own
+//  file because "which songs are in the queue" and "which contexts is this song
+//  tagged for" are two readings of the same array.
+//
 
 import Testing
 import Foundation
@@ -70,11 +75,14 @@ struct PlaybackTests {
     // songName is what the queue matches on — reloadQueue,
     // followCurrentSongInQueue and play(song:) all locate a song by comparing
     // it — so every fixture below gets a distinct one.
+    // storageKey rather than rawValue, which is the same string today and the
+    // point of LR-15 tomorrow: a fixture built from display names would go on
+    // compiling and start matching nothing the moment somebody reworded a chip.
     private func song(_ name: String, contexts: [MusicContext] = [.all]) -> Song {
         Song(title: name,
              songName: name,
              artist: "Test Artist",
-             locations: contexts.map(\.rawValue),
+             locations: contexts.map(\.storageKey),
              populationMin: 0,
              populationMax: 1_000_000)
     }
@@ -531,5 +539,99 @@ struct PlaybackTests {
 
         #expect(manager.songQueue.map(\.songName) == ["a", "b", "c"])
         #expect(manager.currentSong?.songName == "b")
+    }
+}
+
+// MARK: - Context tags
+//
+// LR-15 split MusicContext's storage key from its display name, so what lands
+// in Song.locations is "gym" rather than "Gyms" and rewording a chip label can
+// no longer orphan a tag. These are the assertions that stay true only while
+// that split holds — which is exactly the part a future display rename would
+// break silently, since it wouldn't break the build.
+//
+// Not @MainActor and not serialized, unlike the suite above: nothing here goes
+// near the singleton. Every test builds its own unregistered Song, which
+// answers from its own backing data — see the fixture note at the top for why
+// that needs no ModelContainer.
+struct SongContextTagTests {
+
+    private func makeSong(locations: [String]) -> Song {
+        Song(title: "t", songName: "t", artist: nil,
+             locations: locations, populationMin: nil, populationMax: nil)
+    }
+
+    // The one that matters. If these two ever come back equal, the storage key
+    // has quietly gone back to being the label and the next rename orphans
+    // everything again.
+    @Test func theStoredKeyIsNotTheDisplayedLabel() {
+        #expect(MusicContext.gym.storageKey == "gym")
+        #expect(MusicContext.gym.displayName == "Gyms")
+        #expect(MusicContext.gym.storageKey != MusicContext.gym.displayName)
+    }
+
+    // The two spellings live in separate namespaces, and nothing that reads a
+    // stored tag will accept a label. This is also what makes the V3 → V4
+    // migration idempotent: no old display name is also a new key, so a value
+    // that has already been rewritten falls through that map untouched.
+    @Test func aDisplayNameIsNotAValidStorageKey() {
+        #expect(MusicContext(storageKey: "Gyms") == nil)
+        #expect(MusicContext(storageKey: "All") == nil)
+        #expect(MusicContext(storageKey: "Restaurants") == nil)
+    }
+
+    @Test func everyKeyRoundTripsBackToItsContext() {
+        // spelled out rather than derived: a list built by walking the enum
+        // would agree with itself no matter what the enum said.
+        let contexts: [MusicContext] = [
+            .all, .gym, .restaurant, .store, .park, .home, .work,
+            .street, .driving, .beach, .mountain, .city, .town, .water,
+            .rainy, .snowy, .traveling
+        ]
+        for context in contexts {
+            #expect(MusicContext(storageKey: context.storageKey) == context)
+        }
+        // and no two contexts share one
+        #expect(Set(contexts.map(\.storageKey)).count == contexts.count)
+    }
+
+    @Test func taggingWritesTheKeyAndReadsBackAsTheContext() {
+        let song = makeSong(locations: [])
+
+        song.setTagged(.beach, true)
+
+        #expect(song.locations == ["beach"])
+        #expect(song.isTagged(.beach))
+        #expect(song.taggedContexts == [.beach])
+    }
+
+    // Tagging something already tagged is a no-op rather than a second copy,
+    // and untagging clears every copy in case an older write left duplicates.
+    @Test func taggingIsIdempotentInBothDirections() {
+        let song = makeSong(locations: ["gym", "gym"])
+
+        song.setTagged(.gym, true)
+        #expect(song.locations == ["gym", "gym"])
+
+        song.setTagged(.gym, false)
+        #expect(song.locations.isEmpty)
+
+        song.setTagged(.gym, false)
+        #expect(song.locations.isEmpty)
+    }
+
+    // A string that names no context is kept, not deleted. The migration
+    // deliberately leaves values it can't place alone, so a getter that dropped
+    // them on the way past would finish the job the migration refused to do.
+    @Test func aTagThatNamesNoContextSurvivesButMatchesNothing() {
+        let song = makeSong(locations: ["gym", "location", "Beaches"])
+
+        #expect(song.taggedContexts == [.gym])
+        #expect(!song.isTagged(.beach)) // the old display spelling doesn't count
+        #expect(song.locations == ["gym", "location", "Beaches"])
+
+        // and editing an unrelated tag leaves them exactly where they were
+        song.setTagged(.park, true)
+        #expect(song.locations == ["gym", "location", "Beaches", "park"])
     }
 }

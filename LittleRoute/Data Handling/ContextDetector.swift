@@ -310,7 +310,7 @@ class ContextDetector: ObservableObject {
                 // observing view to say nothing.
                 guard observed != self.confirmedContext else { return }
                 self.confirmedContext = observed
-                print("ContextDetector: manual refresh switched context to \(observed.rawValue)")
+                print("ContextDetector: manual refresh switched context to \(observed.displayName)")
             }
         }
     }
@@ -545,7 +545,7 @@ class ContextDetector: ObservableObject {
             confirmedContext = observedContext
             candidateContext = nil
             candidateSince = nil
-            print("ContextDetector: switched context to \(observedContext.rawValue)")
+            print("ContextDetector: switched context to \(observedContext.displayName)")
         }
     }
 
@@ -588,12 +588,35 @@ class ContextDetector: ObservableObject {
     // who has sat in the same cafe all afternoon those are very different
     // numbers, with only the first one being any of our business.
 
+    // Format version of the blob below, bumped whenever a blob written by an
+    // older build stops meaning what this one would read it as.
+    //
+    // 1 is the first version, and LR-15 is why it exists. This state used to
+    // hold MusicContext *display* strings — "Gyms" — because those were the
+    // on-disk spelling everywhere. They're storage keys now, and a blob written
+    // by a pre-LR-15 build would otherwise decode perfectly and restore
+    // nonsense: every raw value failing to map, so the confirmed context
+    // silently reverts to the launch default and the debt ledger comes back
+    // empty, while savedAt and bufferExpiry sail through looking authoritative.
+    // A half-restore that reports success is worse than no restore.
+    //
+    // So this field is the thing that turns "the strings changed underneath us"
+    // into a fact the code can see. An old blob has no version key at all,
+    // decoding fails on it, and restoreState throws the whole thing away and
+    // starts clean — see there for what the user loses.
+    //
+    // It should not need bumping again for a rename: the keys are frozen now
+    // (@NOTE in MusicContext.swift), which is the same guarantee Song.locations
+    // just bought. It's here for the next *shape* change to this struct.
+    static let persistedStateVersion = 1
+
     private struct PersistedState: Codable {
-        // Raw values rather than the enum, because MusicContext isn't Codable
-        // and its raw values are already the on-disk spelling everywhere else
-        // (see the @NOTE in MusicContext.swift). A rename orphans this the same
-        // way it orphans Song.locations; an unrecognised one is simply dropped
-        // on the way back in rather than failing the whole restore.
+        // Storage keys rather than the enum, because MusicContext isn't Codable
+        // and its keys are already the on-disk spelling everywhere else. Adding
+        // a context is safe here — an unrecognised key is dropped on the way
+        // back in rather than failing the whole restore — and renaming one is
+        // no longer a thing anybody can do by accident.
+        let version: Int
         let confirmedContext: String
         let debts: [String: Double]
         let bufferedContext: String?
@@ -606,9 +629,10 @@ class ContextDetector: ObservableObject {
     // are already floored at minimumSearchInterval.
     private func persistState() {
         let state = PersistedState(
-            confirmedContext: confirmedContext.rawValue,
-            debts: debts.reduce(into: [String: Double]()) { $0[$1.key.rawValue] = $1.value },
-            bufferedContext: bufferedContext?.rawValue,
+            version: Self.persistedStateVersion,
+            confirmedContext: confirmedContext.storageKey,
+            debts: debts.reduce(into: [String: Double]()) { $0[$1.key.storageKey] = $1.value },
+            bufferedContext: bufferedContext?.storageKey,
             bufferExpiry: bufferExpiry,
             savedAt: now()
         )
@@ -620,8 +644,28 @@ class ContextDetector: ObservableObject {
     // construction, so a restore that ran in the initialiser could only ever
     // read the real clock and no test could drive it.
     private func restoreState() {
-        guard let encoded = store.data(forKey: Self.stateDefaultsKey),
-              let saved = try? JSONDecoder().decode(PersistedState.self, from: encoded) else { return }
+        guard let encoded = store.data(forKey: Self.stateDefaultsKey) else { return }
+
+        // A blob we can't read, or one written in a format that predates the
+        // current spelling, is discarded whole rather than salvaged in part.
+        //
+        // The pre-LR-15 blob is the case this was written for, and it's worth
+        // being clear about the cost: on the first launch after upgrading, the
+        // detector forgets where the user was and starts from the launch default
+        // with an empty debt ledger. That is one dwell window of the wrong
+        // playlist — annoying, bounded, and self-correcting the moment location
+        // arrives. Translating the old display strings instead would mean a
+        // second frozen copy of the migration's map living in this file forever,
+        // to buy back thirty seconds, once, per user. Not worth it.
+        //
+        // Cleared rather than merely ignored, same as the staleness path below:
+        // a blob this build will never accept shouldn't be re-read and
+        // re-rejected on every launch until something happens to overwrite it.
+        guard let saved = try? JSONDecoder().decode(PersistedState.self, from: encoded),
+              saved.version == Self.persistedStateVersion else {
+            store.removeObject(forKey: Self.stateDefaultsKey)
+            return
+        }
 
         // Wall clock is the only clock that survives a process, so this is also
         // the only place a user rewinding their device time can confuse us. A
@@ -633,19 +677,21 @@ class ContextDetector: ObservableObject {
             return
         }
 
-        // Leaves initialContext in place if the raw value no longer maps.
-        if let restored = MusicContext(rawValue: saved.confirmedContext) {
+        // Leaves initialContext in place if the key no longer maps — which now
+        // only happens if a context was *removed* from the enum, the version
+        // check above having taken care of the case where they were all respelt.
+        if let restored = MusicContext(storageKey: saved.confirmedContext) {
             confirmedContext = restored
         }
 
         debts = saved.debts.reduce(into: [MusicContext: Double]()) { result, entry in
-            guard let context = MusicContext(rawValue: entry.key), entry.value > 0 else { return }
+            guard let context = MusicContext(storageKey: entry.key), entry.value > 0 else { return }
             result[context] = min(entry.value, ContextClassifier.maxDebt)
         }
 
         // Only worth restoring if there is sentence left to serve.
-        if let raw = saved.bufferedContext, let expiry = saved.bufferExpiry,
-           let buffered = MusicContext(rawValue: raw), now() < expiry {
+        if let key = saved.bufferedContext, let expiry = saved.bufferExpiry,
+           let buffered = MusicContext(storageKey: key), now() < expiry {
             bufferedContext = buffered
             bufferExpiry = expiry
         }

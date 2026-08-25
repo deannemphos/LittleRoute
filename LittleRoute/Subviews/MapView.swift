@@ -60,7 +60,7 @@ struct MapView: View {
                         .overlay(Circle().stroke(.white.opacity(0.9), lineWidth: isActive ? 2 : 1))
                         // a bare SF Symbol announces its own name ("figure.run"), which
                         // tells you nothing about which place you're standing in
-                        .accessibilityLabel("\(zone.name), \(zone.context.rawValue)")
+                        .accessibilityLabel("\(zone.name), \(zone.context.displayName)")
                 }
             }
 

@@ -159,7 +159,9 @@ struct LibraryView: View {
             // Context tag chips (collapsible)
             if isExpanded {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: chipMinWidth), spacing: 8)], spacing: 8) {
-                    ForEach(allContexts, id: \.rawValue) { context in
+                    // keyed on the storage key rather than the label, so
+                    // rewording a chip doesn't tear down and rebuild the grid
+                    ForEach(allContexts, id: \.storageKey) { context in
                         contextChip(song: song, context: context)
                     }
                 }
@@ -178,11 +180,11 @@ struct LibraryView: View {
     }
 
     private func contextChip(song: Song, context: MusicContext) -> some View {
-        let isTagged = song.locations.contains(context.rawValue)
+        let isTagged = song.isTagged(context)
         return Button {
             toggleTag(song: song, context: context)
         } label: {
-            Text(context.rawValue)
+            Text(context.displayName)
                 .themedFont(.chipLabel, theme: theme)
                 .lineLimit(1)
                 // context names are single words, so shrinking beats truncating
@@ -215,15 +217,11 @@ struct LibraryView: View {
         .buttonStyle(.plain)
         // whether the tag is on is carried entirely by the capsule fill
         .accessibilityValue(isTagged ? "On" : "Off")
-        .accessibilityHint("Toggles whether this song plays in the \(context.rawValue) context.")
+        .accessibilityHint("Toggles whether this song plays in the \(context.displayName) context.")
     }
 
     private func toggleTag(song: Song, context: MusicContext) {
-        if let index = song.locations.firstIndex(of: context.rawValue) {
-            song.locations.remove(at: index)
-        } else {
-            song.locations.append(context.rawValue)
-        }
+        song.setTagged(context, !song.isTagged(context))
         try? modelContext.save()
         // Refresh the queue so tag changes take effect immediately
         audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
