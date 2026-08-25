@@ -514,8 +514,12 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     // them now.
     //
     // First one wins on a collision, which is the .first the per-name fetch used to take.
-    // Nothing enforces songName uniqueness yet, so duplicates remain possible — and since
-    // neither fetch sorts, "first" was arbitrary between them before and still is.
+    // As of LR-16 that branch should be unreachable: songName carries a unique constraint,
+    // and the V4 → V5 stage collapsed the duplicate rows that predate it. The closure stays
+    // anyway. Dropping it means Dictionary(uniqueKeysWithValues:), which does not tolerate
+    // a duplicate key — it traps — so removing it would trade an arbitrary-but-harmless
+    // pick for a crash, on the strength of a guarantee no one here has been able to run
+    // even once.
     private func existingSongsByName(in modelContext: ModelContext) -> [String: Song] {
         let songs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
         return Dictionary(songs.map { ($0.songName, $0) }, uniquingKeysWith: { existing, _ in existing })
@@ -632,6 +636,17 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
     }
     
     // Jump to a specific song already in the queue and play it
+    //
+    // Matched on songName, here and in followCurrentSongInQueue and reloadQueue, and
+    // deliberately left that way by LR-16 rather than moved to persistentModelID. The
+    // constraint added in that task is what makes this a real identity test instead of a
+    // guess: two rows can no longer share a name, so "the song with this name" names
+    // exactly one song. Model ID would say the same thing about every row the store has
+    // ever handed us, and would additionally say it about rows that were never inserted
+    // into a ModelContext at all — which is what every fixture in PlaybackTests is, by
+    // design. Swapping the comparison would rest roughly forty tests on the behaviour of
+    // persistentModelID on an unregistered model, to replace a comparison that has just
+    // been made correct.
     public func play(song: Song) {
         guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else {
             print("Song not in queue: \(song.songName)")
@@ -742,6 +757,11 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         // matches nothing since it was typed. It is unreferenced, so nothing has
         // ever run it; still, a placeholder that writes junk into the store is
         // worse than one that writes something inert but real.
+        //
+        // The hardcoded songName is a second, newer problem: it is the unique key
+        // as of LR-16, so two calls to this collide on it. Left alone rather than
+        // invented a fix for, since whoever wires this up has to supply a real
+        // filename anyway — but it should not be the surprise when they do.
         let newSong = Song(title: title, songName: "filename", artist: artist, locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 9999)
         modelContext.insert(newSong)
         try? modelContext.save()

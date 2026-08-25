@@ -8,14 +8,37 @@
 import SwiftData
 import AVFoundation
 
-// The live model, and what SongSchemaV4 points at. Its shape *is* the current
+// The live model, and what SongSchemaV5 points at. Its shape *is* the current
 // store, so changing anything stored below needs a new schema version and a
 // migration stage — and the previous version has to be frozen first, or it
 // stops describing the store people already have. See SongSchema.swift.
 @Model
 final class Song {
     var title: String
-    var songName: String /* {
+
+    // The mp3's basename, without the extension, and since LR-16 the song's
+    // identity as far as the store is concerned.
+    //
+    // It was always being *used* as the identity — url(forSongFile:) resolves a
+    // file from it, both insert paths check it before writing a row, and the
+    // queue locates a song by comparing it — while the store was perfectly happy
+    // to hold two rows claiming the same one. Importing the same file twice
+    // through two different folders was enough to make that happen, and after it
+    // did, "the song" meant whichever of the two rows a fetch returned first.
+    // The constraint is what turns comparing this string into a real identity
+    // test rather than a good guess.
+    //
+    // What it costs is worth knowing before relying on it: SwiftData's unique
+    // constraint upserts on collision rather than throwing, so inserting a
+    // second Song with an existing songName updates that existing row in place
+    // instead of raising an error the caller can catch. Both insert paths check
+    // for the name first anyway (see existingSongsByName), so nothing depends on
+    // which of the two behaviours it is — and it could not be confirmed from the
+    // machine this was written on, which has no Xcode and could not run it once.
+    //
+    // Rows that predate the constraint are deduplicated by the V4 → V5 stage in
+    // SongSchema.swift, which has to run *before* the constraint applies.
+    @Attribute(.unique) var songName: String /* {
         // This is the actual file name of the song, without the extension
         return title.replacingOccurrences(of: ".mp3", with: "")
     } */

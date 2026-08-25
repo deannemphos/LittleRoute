@@ -7,6 +7,8 @@
 //
 
 import SwiftUI
+// for persistentModelID, which the rows below are identified by
+import SwiftData
 
 struct QueueDrawerView: View {
     @ObservedObject var audioManager: AudioPlayerManager
@@ -141,7 +143,10 @@ struct QueueDrawerView: View {
 
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(audioManager.songQueue, id: \.songName) { song in
+                    // by model ID rather than songName: the store answers "which
+                    // row is this", and the name is only a field that happens to
+                    // be unique since LR-16
+                    ForEach(audioManager.songQueue, id: \.persistentModelID) { song in
                         queueRow(song)
                     }
                 }
@@ -170,7 +175,7 @@ struct QueueDrawerView: View {
     }
 
     private func queueRow(_ song: Song) -> some View {
-        let isCurrent = audioManager.currentSong?.songName == song.songName
+        let isCurrent = audioManager.currentSong?.persistentModelID == song.persistentModelID
         let artist = song.artist ?? "Unknown Artist"
         // the speaker glyph is the only thing marking the playing row, and on its own
         // it reads as its symbol name — fold that state into the row's spoken label

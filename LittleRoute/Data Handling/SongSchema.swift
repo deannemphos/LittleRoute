@@ -9,8 +9,9 @@
 //  Three planned changes are breaking without that: a unique constraint on
 //  songName (LR-16), stable context keys in locations (LR-15), and an
 //  isImported flag (LR-17). This file is the mechanism they hang their stages
-//  off. isImported landed as V3 and the context keys as V4; the unique
-//  constraint is still to come and needs its own version and its own stage.
+//  off. isImported landed as V3, the context keys as V4 and the unique
+//  constraint as V5; all three are below, each with the stage that carries the
+//  existing rows across.
 //
 
 import Foundation
@@ -22,13 +23,23 @@ import SwiftData
 //    points at the live Song in Song.swift, so editing that file silently
 //    rewrites what that version claims the old store looked like. Before
 //    changing Song, copy today's Song into it as a nested class exactly the way
-//    V1 does, so it stops moving. V2 and V3 have both been through this.
+//    V1 does, so it stops moving. V2, V3 and V4 have all been through this.
+//    Freezing a version also changes what its own stage means: a stage that
+//    lands in the version you just froze has to fetch the transcription rather
+//    than the live class, because the live class is no longer one of that
+//    version's models. Both custom stages below have had that correction made
+//    to them, one version apart.
 // 2. Add the new SongSchemaVn holding the new shape.
 // 3. Add a stage to SongMigrationPlan.stages. .lightweight only covers changes
 //    SwiftData can infer on its own — adding an optional or defaulted
 //    property, dropping a property, dropping an entity. Anything that needs
 //    existing rows rewritten (deduplicating songName, rewriting locations from
-//    display strings to stable keys) has to be a .custom stage.
+//    display strings to stable keys) has to be a .custom stage. Which half of a
+//    .custom stage the work goes in is a real decision and not a habit:
+//    didMigrate for anything that fixes rows up once the new shape is in place,
+//    willMigrate for anything the new shape would otherwise choke on. The V4 →
+//    V5 dedup is the only case of the latter so far, and the comment on it says
+//    why at length.
 // 4. Point sharedModelContainer in LittleRouteApp at the new version.
 //
 // And one rule that isn't a step, because it applies to the stage rather than
@@ -190,9 +201,15 @@ enum SongSchemaV3: VersionedSchema {
 // rather than its display name — so that rewording a chip label stops orphaning
 // every tag in the library. See the @NOTE in MusicContext.swift.
 //
-// Song is not re-declared: V4 is the current version, so it points at the live
-// class in Song.swift and there stays exactly one definition of the model in
-// play. The next version along has to freeze this one first — see step 1.
+// This used to point at the live class in Song.swift; LR-16 froze it. Putting
+// @Attribute(.unique) on the live songName is exactly the edit step 1 warns
+// about: left pointing at Song.swift, V4 would claim the store every current
+// build has been writing already refused duplicate names, and the V4 → V5 stage
+// would be deduplicating rows on the way out of a version that supposedly never
+// allowed them — deduplicating, in other words, a problem it had just finished
+// asserting could not exist. So V4 keeps meaning what it has always meant, V3's
+// columns with no constraint on any of them, and says so in its own
+// transcription below rather than by pointing at a file that moves.
 //
 // ⚠ The shape being identical is the one thing about this version a Mac has to
 // confirm. SwiftData decides which stages to run by working out which version
@@ -212,6 +229,67 @@ enum SongSchemaV4: VersionedSchema {
 
     static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
 
+    // Self. again — the nested Song below shadows the top-level one.
+    static var models: [any PersistentModel.Type] {
+        [Self.Song.self]
+    }
+
+    @Model
+    final class Song {
+        var title: String
+        var songName: String
+        var artist: String? = nil
+        var locations: [String]
+        var populationMin: Int = 0
+        var populationMax: Int = 1000000000
+        var isImported: Bool = false
+
+        init(title: String, songName: String, artist: String?, locations: [String], populationMin: Int?, populationMax: Int?, isImported: Bool = false) {
+            self.title = title
+            self.songName = songName.replacingOccurrences(of: ".mp3", with: "")
+            self.artist = artist
+            self.locations = locations
+            self.populationMin = populationMin ?? self.populationMin
+            self.populationMax = populationMax ?? self.populationMax
+            self.isImported = isImported
+        }
+    }
+}
+
+// MARK: - V5 — songName is unique
+//
+// V4's columns, with a uniqueness constraint on songName. That is the whole
+// change. The app has always treated the name as a song's identity — it is the
+// mp3's basename, it is what the queue matches on, it is what both insert paths
+// check before writing a row — while the store itself was perfectly willing to
+// hold two rows claiming it. This is the version where the store agrees with
+// the app.
+//
+// Unlike V3 → V4 this is a genuine shape change, so the ⚠ recorded on V4 should
+// not carry over. That version's worry is that two descriptions listing
+// identical columns may be indistinguishable to SwiftData, leaving it unable to
+// tell which one a store is already at; a uniqueness constraint is part of the
+// description itself rather than a different set of strings inside an unchanged
+// column, so there is something here for the comparison to catch. "Should" and
+// not "does" — that is reasoning about SwiftData's behaviour, not a run of it,
+// and it is one more thing for a Mac to confirm.
+//
+// What it buys in exchange is a migration that can *fail*. A unique constraint
+// cannot be applied to a column that already holds duplicates, and duplicates
+// are possible in every store written so far. That is why the stage below is
+// the only one in this file that does its work in willMigrate — see
+// migrateV4toV5.
+//
+// Song is not re-declared: V5 is the current version, so it points at the live
+// class in Song.swift and there stays exactly one definition of the model in
+// play. The next version along has to freeze this one first — see step 1.
+enum SongSchemaV5: VersionedSchema {
+
+    static var versionIdentifier: Schema.Version { Schema.Version(5, 0, 0) }
+
+    // No Self. here, and the difference is the point: every version above
+    // shadows the top-level Song with a frozen transcription, and this one
+    // genuinely means the live model in Song.swift.
     static var models: [any PersistentModel.Type] {
         [Song.self]
     }
@@ -221,11 +299,11 @@ enum SongSchemaV4: VersionedSchema {
 enum SongMigrationPlan: SchemaMigrationPlan {
 
     static var schemas: [any VersionedSchema.Type] {
-        [SongSchemaV1.self, SongSchemaV2.self, SongSchemaV3.self, SongSchemaV4.self]
+        [SongSchemaV1.self, SongSchemaV2.self, SongSchemaV3.self, SongSchemaV4.self, SongSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
     }
 
     // Dropping an entity is one of the changes SwiftData infers, so this is
@@ -272,6 +350,142 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             Self.rewriteLocationsAsContextKeys(in: context)
         }
     )
+
+    // The odd one out in this file, and deliberately so: the work happens in
+    // willMigrate, not didMigrate. Do not "fix" it to match the two stages
+    // above.
+    //
+    // V5's shape change *is* the unique constraint, and a unique constraint
+    // cannot be applied to a column that already holds duplicates. Left to
+    // didMigrate the dedup would run after the constraint it exists to make
+    // possible — the migration fails first, the container never opens, and
+    // since LR-10 that drops the user into the in-memory fallback with an empty
+    // library. The rows have to be one-per-name by the time the constraint
+    // lands, and willMigrate is the only hook that runs before it.
+    //
+    // Duplicates genuinely are possible in an existing store, which is the other
+    // half of why this can't wait for didMigrate. Nothing has ever enforced the
+    // name: existingSongsByName in AudioPlayerManager has been arbitrarily
+    // picking a winner between colliding rows all along, and said so in its own
+    // comment until this task made the sentence obsolete.
+    static let migrateV4toV5 = MigrationStage.custom(
+        fromVersion: SongSchemaV4.self,
+        toVersion: SongSchemaV5.self,
+        willMigrate: { context in
+            Self.collapseDuplicateSongNames(in: context)
+        },
+        didMigrate: nil
+    )
+
+    // MARK: - V4 → V5: one row per songName
+
+    // Collapse rows sharing a songName down to a single row, before the
+    // constraint that would refuse them arrives.
+    //
+    // Fetches SongSchemaV4.Song rather than the live Song, which is the same
+    // rule backfillIsImported follows and not the opposite one: a stage's
+    // context speaks whichever version it is currently sitting in.
+    // backfillIsImported is a didMigrate, so it has already arrived and names
+    // its destination; this is a willMigrate, so it hasn't left yet and names
+    // its source. V4 is the shape actually on disk at this moment — the one
+    // without the constraint. Asking for the live Song here would be asking the
+    // store for a shape it does not have yet.
+    //
+    // The policy, and why each part of it is the cautious choice:
+    //
+    // - Exactly one survivor per name, picked deterministically: an imported row
+    //   if the group has one, otherwise the first row the fetch returned. Imported
+    //   wins because that is the row My Music lists and the row whose mp3 is
+    //   sitting in Documents/Music; keeping a bundled twin instead would take a
+    //   song the user imported off the library screen and out of reach of the
+    //   swipe that deletes its file.
+    //
+    // - The survivor inherits every duplicate's tags, as a de-duplicated union in
+    //   first-seen order — the same collapse the V3 → V4 stage does within a
+    //   single row's array. Someone who tagged one copy for the gym and the other
+    //   for driving tagged *that song* for both; the second row was only ever an
+    //   accident of the store, and losing half their tagging to a migration they
+    //   didn't ask for is the outcome worth spending code to avoid.
+    //
+    // - Deleting a Song row deletes no mp3. Nothing here touches the filesystem,
+    //   and the file a deleted row named is the same file the survivor names —
+    //   they agreed on songName, which is what made them duplicates in the first
+    //   place. "The migration deleted my songs" is the fear this raises, and the
+    //   answer is that it deletes duplicate *records* of one song and the song
+    //   still plays afterwards.
+    //
+    // Nothing here throws, and the reason is slightly different from the one on
+    // backfillIsImported. Throwing would fail the container open and land the
+    // user in LR-10's in-memory fallback, same as ever — but giving up quietly is
+    // strictly better here, because giving up still lets the constraint be
+    // attempted, and a store that had no duplicates in it migrates perfectly well
+    // even if this pass couldn't read it. Throwing would guarantee the bad
+    // outcome in order to report a problem that may not exist. Both failure paths
+    // log and carry on.
+    private static func collapseDuplicateSongNames(in context: ModelContext) {
+        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
+            print("songName dedup: could not read the songs, leaving any duplicates in place")
+            return
+        }
+
+        // Grouped by name, with the names kept in the order the fetch handed
+        // them over. A Dictionary alone would do the grouping, but iterating one
+        // is unordered, and an unordered walk would make which row survives — and
+        // what order the merged tags end up in — differ between two runs over the
+        // same store. A migration that can only happen once should still be able
+        // to give the same answer twice.
+        var order: [String] = []
+        var groups: [String: [SongSchemaV4.Song]] = [:]
+        for song in songs {
+            if groups[song.songName] == nil { order.append(song.songName) }
+            groups[song.songName, default: []].append(song)
+        }
+
+        var deleted = 0
+        var collidingNames = 0
+
+        for name in order {
+            guard let group = groups[name], group.count > 1 else { continue }
+            collidingNames += 1
+
+            let survivor = group.first(where: \.isImported) ?? group[0]
+
+            // The survivor's own tags first, then the rest of the group in fetch
+            // order. Visiting the survivor twice costs nothing — its keys are
+            // already in `seen` by the time the group loop reaches it — and it
+            // buys the surviving row keeping its own array as a prefix instead of
+            // being reshuffled into whatever order the store happened to return.
+            var seen: Set<String> = []
+            var merged: [String] = []
+            for song in [survivor] + group {
+                for key in song.locations where seen.insert(key).inserted {
+                    merged.append(key)
+                }
+            }
+
+            // only touch the row if the merge actually added something — an
+            // untouched model is one less thing for the save below to fail on.
+            if merged != survivor.locations {
+                survivor.locations = merged
+            }
+
+            for song in group where song !== survivor {
+                context.delete(song)
+                deleted += 1
+            }
+        }
+
+        do {
+            try context.save()
+            // Printed even when both counts are zero, which is the common case
+            // and the one worth confirming: this line is how anyone with a Mac
+            // finds out the stage ran at all, and silence would be
+            // indistinguishable from SwiftData having skipped it.
+            print("songName dedup: collapsed \(deleted) duplicate row(s) across \(collidingNames) name(s)")
+        } catch {
+            print("songName dedup: could not save, leaving \(deleted) duplicate row(s) in place — the unique constraint may now refuse the migration: \(error)")
+        }
+    }
 
     // MARK: - V3 → V4: display names to storage keys
 
@@ -345,8 +559,17 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // lands the user in the in-memory fallback — an empty library and every edit
     // discarded on quit. Leaving the tags un-rewritten is a bad afternoon;
     // throwing is a lost library. Both failure paths log and give up.
+    //
+    // Fetches SongSchemaV4.Song rather than the live Song, and it used to say
+    // Song — the same correction LR-15 made to backfillIsImported, for the same
+    // reason and one version further along. This is a didMigrate, so it has
+    // already arrived: its context speaks V4's models, and the live class stopped
+    // being one of those the moment LR-16 froze V4 and gave it a transcription of
+    // its own. The two shapes are still identical today, so the old spelling
+    // would very likely have gone on working — which is exactly why it is worth
+    // changing now, while it is a rename and not a debugging session.
     private static func rewriteLocationsAsContextKeys(in context: ModelContext) {
-        guard let songs = try? context.fetch(FetchDescriptor<Song>()) else {
+        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
             print("context key migration: could not read the migrated songs, leaving every tag in its old spelling")
             return
         }

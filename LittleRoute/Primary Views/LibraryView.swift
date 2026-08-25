@@ -17,7 +17,12 @@ struct LibraryView: View {
 
     @Query private var songs: [Song]
     @State private var showFileImporter = false
-    @State private var expandedSongs: Set<String> = [] // songNames with the context picker shown
+    // Songs with the context picker shown, held by model ID rather than by
+    // songName. The two answer the same question now that songName is
+    // constrained unique, but only one of them keeps answering it if a later
+    // version ever lets a song be renamed: a set keyed on the name would leave
+    // the wrong card open, or none.
+    @State private var expandedSongs: Set<PersistentIdentifier> = []
 
     @AppStorage(AppTheme.storageKey) private var themeRaw = AppTheme.minimal.rawValue
     private var theme: AppTheme { AppTheme.current(from: themeRaw) }
@@ -71,7 +76,13 @@ struct LibraryView: View {
                     }
                 } else {
                     List {
-                        ForEach(importedSongs, id: \.songName) { song in
+                        // Identified by the model's own ID, not by songName. The
+                        // name is unique in the store as of LR-16, so the two
+                        // agree — but the ID is the store's answer to "which row
+                        // is this" and the name is a field that happens to be
+                        // unique, and a List whose rows carry swipe-to-delete
+                        // should be reading identity from the former.
+                        ForEach(importedSongs, id: \.persistentModelID) { song in
                             songCard(song)
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
@@ -122,14 +133,14 @@ struct LibraryView: View {
 
     // Card showing a song with a collapsible context tag section
     private func songCard(_ song: Song) -> some View {
-        let isExpanded = expandedSongs.contains(song.songName)
+        let isExpanded = expandedSongs.contains(song.persistentModelID)
         return VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     if isExpanded {
-                        expandedSongs.remove(song.songName)
+                        expandedSongs.remove(song.persistentModelID)
                     } else {
-                        expandedSongs.insert(song.songName)
+                        expandedSongs.insert(song.persistentModelID)
                     }
                 }
             } label: {
@@ -233,7 +244,8 @@ struct LibraryView: View {
             .appendingPathComponent("\(song.songName).mp3")
         try? FileManager.default.removeItem(at: fileURL)
 
-        expandedSongs.remove(song.songName)
+        // before the delete, while the model still has an ID to look up
+        expandedSongs.remove(song.persistentModelID)
         modelContext.delete(song)
         try? modelContext.save()
 
