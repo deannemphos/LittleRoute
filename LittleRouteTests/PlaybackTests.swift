@@ -56,7 +56,7 @@ import SwiftData
 // test's reloadQueue landing in the middle of another's skip.
 //
 // @MainActor because the class says at the top of its own file that everything
-// on it expects the main thread — it writes @Published state and schedules a
+// on it expects the main thread — it writes observable state and schedules a
 // run-loop Timer.
 @MainActor
 @Suite(.serialized)
@@ -329,7 +329,7 @@ struct PlaybackTests {
 
     // reloadQueue's shuffle argument used to be decoration — the body read the
     // isShuffled property and ignored it. This pins both halves of the fix: the
-    // argument decides the order, the published flag is made to agree with it,
+    // argument decides the order, the observable flag is made to agree with it,
     // and orderedQueue is still captured *before* the shuffle, so unshuffling
     // afterwards finds the caller's order rather than the shuffled one.
     @Test func reloadQueueShufflesOnItsArgumentAndKeepsTheFlagHonest() {
@@ -418,7 +418,7 @@ struct PlaybackTests {
         manager.play(song: outsider)
 
         #expect(manager.currentSong?.songName == "a")
-        // the index is untouched too, not just the published song
+        // the index is untouched too, not just the observable song
         manager.skip()
         #expect(manager.currentSong?.songName == "b")
     }
@@ -487,7 +487,7 @@ struct PlaybackTests {
         #expect(manager.isPaused)
     }
 
-    // The teardown resets currentIndex as well as the published state, so a
+    // The teardown resets currentIndex as well as the observable state, so a
     // context that comes back after matching nothing starts from the top rather
     // than from wherever the old queue had got to.
     @Test func aQueueRefilledAfterATeardownStartsFromTheTop() {

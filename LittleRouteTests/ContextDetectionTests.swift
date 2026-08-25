@@ -446,7 +446,7 @@ private final class StubPOIProvider: POIProviding {
 
     // how many searches the detector actually spent, and how wide the last one
     // reached. LR-21 gates the first and halves the second, and neither is
-    // observable from the detector's published state -- the whole point of the
+    // visible from the detector's observable state -- the whole point of the
     // gate is that a skipped search looks identical from the outside.
     private(set) var searchCount = 0
     private(set) var lastRequestedRadius: CLLocationDistance?
@@ -721,7 +721,7 @@ struct ContextDetectorTests {
 
         // confirmedContext is the whole signal now — LR-08 removed the
         // onContextChange callback this used to also assert on, because the
-        // published property already says everything the callback did.
+        // observable property already says everything the callback did.
         #expect(detector.confirmedContext == .store)
         #expect(detector.candidateContext == nil)
     }
