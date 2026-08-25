@@ -125,6 +125,46 @@ struct ContextClassifierTests {
         #expect(ContextClassifier.debtMultiplier(for: 99) > 0)
     }
 
+    // MARK: Zone identity
+
+    // Locally built map items carry no MapKit identifier, so these exercise the
+    // coordinate fallback — the path that used to churn.
+    @Test func zoneIDSurvivesCoordinateDriftForTheSamePlace() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let firstPoll = mapItem(category: .restaurant, metersEast: 60, name: "Rosa's")
+        // the same place, nudged half a metre by a fresh search
+        let secondPoll = mapItem(category: .restaurant, metersEast: 60.5, name: "Rosa's")
+
+        let first = ContextClassifier.evaluate(places: [firstPoll], userLocation: user)
+        let second = ContextClassifier.evaluate(places: [secondPoll], userLocation: user)
+
+        #expect(first.zones.first?.id == second.zones.first?.id)
+    }
+
+    @Test func distinctPlacesTwentyMetresApartKeepDistinctZoneIDs() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let rosas = mapItem(category: .restaurant, metersEast: 0, name: "Rosa's")
+        let hanks = mapItem(category: .restaurant, metersEast: 20, name: "Hank's")
+
+        let evaluation = ContextClassifier.evaluate(places: [rosas, hanks], userLocation: user)
+
+        #expect(evaluation.zones.count == 2)
+        #expect(evaluation.zones[0].id != evaluation.zones[1].id)
+    }
+
+    // Two units of the same building round into one grid cell — the name is what
+    // has to keep them apart there.
+    @Test func neighborsInsideOneGridCellAreSplitByName() {
+        let user = CLLocation(latitude: 0, longitude: 0)
+        let bakery = mapItem(category: .bakery, metersEast: 30, name: "Unit A")
+        let cafe = mapItem(category: .cafe, metersEast: 32, name: "Unit B")
+
+        let evaluation = ContextClassifier.evaluate(places: [bakery, cafe], userLocation: user)
+
+        #expect(evaluation.zones.count == 2)
+        #expect(evaluation.zones[0].id != evaluation.zones[1].id)
+    }
+
     // MARK: External factors
 
     @Test func rainOverridesPOIsAndSpeed() {
@@ -194,15 +234,16 @@ struct ContextClassifierTests {
         #expect(result == .beach)
     }
 
-    private func mapItem(category: MKPointOfInterestCategory, latitude: Double, longitude: Double) -> MKMapItem {
+    private func mapItem(category: MKPointOfInterestCategory, latitude: Double, longitude: Double, name: String? = nil) -> MKMapItem {
         let placemark = MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
         let item = MKMapItem(placemark: placemark)
         item.pointOfInterestCategory = category
+        if let name { item.name = name }
         return item
     }
 
-    private func mapItem(category: MKPointOfInterestCategory, metersEast: Double) -> MKMapItem {
-        mapItem(category: category, latitude: 0, longitude: metersEast / 111_320)
+    private func mapItem(category: MKPointOfInterestCategory, metersEast: Double, name: String? = nil) -> MKMapItem {
+        mapItem(category: category, latitude: 0, longitude: metersEast / 111_320, name: name)
     }
 }
 
