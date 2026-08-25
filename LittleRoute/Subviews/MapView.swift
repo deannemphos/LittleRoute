@@ -9,7 +9,13 @@ import SwiftUI
 import MapKit
 
 struct MapView: View {
-    @ObservedObject var contextDetector: ContextDetector
+    // Held plainly rather than as @ObservedObject. The body below reads exactly
+    // one property off the detector — zones — and @ObservedObject had no way to
+    // know that: it subscribed to the object, so every evaluation invalidated
+    // this map for a change to contextScores, latestWeather or debts that the
+    // map has never rendered. @Observable tracks the reads a body actually
+    // performs, so this view now depends on zones and nothing else.
+    let contextDetector: ContextDetector
     var context: MusicContext
 
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
