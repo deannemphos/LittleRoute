@@ -5,7 +5,10 @@ import MapKit
 // Points of interest reference
 // https://developer.apple.com/documentation/mapkit/mkpointofinterestcategory
 
-class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate {
+// POIProviding is the two-member slice ContextDetector talks to; the members
+// below already satisfy it, so conforming here costs nothing and lets the
+// detector be built against a stub instead of a real CLLocationManager.
+class LocationHandler: NSObject, ObservableObject, CLLocationManagerDelegate, POIProviding {
     // MARK: - Properties
     private let locationManager = CLLocationManager()
     

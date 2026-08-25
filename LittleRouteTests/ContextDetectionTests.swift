@@ -247,11 +247,31 @@ struct ContextClassifierTests {
     }
 }
 
+// Stands in for LocationHandler: no CLLocationManager, no authorization prompt,
+// no MKLocalSearch. The detector only ever asks for these two things.
+private final class StubPOIProvider: POIProviding {
+    var currentLocation: CLLocation?
+    // what the next search hands back -- nothing here touches MapKit
+    var searchResult: Result<[MKMapItem], Error> = .success([])
+
+    func getPointsOfInterest(radius: CLLocationDistance,
+                             filter: [MKPointOfInterestCategory]?,
+                             completion: @escaping (Result<[MKMapItem], Error>) -> Void) {
+        completion(searchResult)
+    }
+}
+
 struct ContextDetectorTests {
+
+    // The detector's reference is weak, so whatever we pass has to be owned
+    // somewhere. Swift Testing builds a fresh suite value per test, so this
+    // outlives the detector it's handed to — the old inline `LocationHandler()`
+    // argument was deallocated before the first #expect ever ran.
+    private let poiProvider = StubPOIProvider()
 
     private func makeDetector(initial: MusicContext = .all) -> (ContextDetector, (TimeInterval) -> Void) {
         let detector = ContextDetector(
-            locationHandler: LocationHandler(),
+            poiProvider: poiProvider,
             initialContext: initial,
             dwellDuration: 30,
             debtAccumulationDuration: 480, // pin explicitly so UserDefaults can't leak into tests
@@ -381,11 +401,11 @@ struct ContextDetectorTests {
         }
 
         UserDefaults.standard.set(120.0, forKey: key) // spec's field-testing value
-        let detector = ContextDetector(locationHandler: LocationHandler(), weatherProvider: nil)
+        let detector = ContextDetector(poiProvider: poiProvider, weatherProvider: nil)
         #expect(detector.debtAccumulationDuration == 120)
 
         UserDefaults.standard.removeObject(forKey: key)
-        let fallback = ContextDetector(locationHandler: LocationHandler(), weatherProvider: nil)
+        let fallback = ContextDetector(poiProvider: poiProvider, weatherProvider: nil)
         #expect(fallback.debtAccumulationDuration == ContextDetector.defaultDebtAccumulationDuration)
     }
 
