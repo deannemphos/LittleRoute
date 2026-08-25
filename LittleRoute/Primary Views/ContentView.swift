@@ -14,14 +14,25 @@ import UniformTypeIdentifiers
 
 
 struct ContentView: View {
-    @ObservedObject private var audioManager = AudioPlayerManager.shared
+    // A plain reference, not @ObservedObject. This view doesn't own the singleton
+    // and never needed the wrapper to observe it; what the wrapper did do was
+    // subscribe the whole body to the whole object, so the progress timer's
+    // twice-a-second write to currentTime rebuilt the map, the disc and both
+    // CurvedText arcs along with the progress bar that had actually asked for it.
+    // @Observable tracks reads property by property, so a tick now reaches only
+    // the parts of this body that read the clock.
+    private let audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
 
     // Owned by LittleRouteApp and injected, not constructed here: a View can't
     // own these. Re-initializing ContentView would have built a second
     // CLLocationManager and reset the detector's dwell/debt/buffer state.
-    @EnvironmentObject private var locationHandler: LocationHandler
-    @EnvironmentObject private var contextDetector: ContextDetector
+    //
+    // The non-optional spelling of @Environment, which traps when nothing was
+    // injected, exactly as @EnvironmentObject did before it. Nothing about the
+    // ownership argument above changes -- only how the app scope hands them down.
+    @Environment(LocationHandler.self) private var locationHandler
+    @Environment(ContextDetector.self) private var contextDetector
 
     @Query private var songs: [Song] // Query all songs from the database
     @State private var queueDrawerOpen = false
