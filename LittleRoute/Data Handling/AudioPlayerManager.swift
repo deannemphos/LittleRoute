@@ -388,7 +388,9 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + fadeDuration) { [weak self] in
             guard let self = self else { return }
             self.audioPlayer?.stop() // ensure the faded-out song doesn't keep playing if the new queue is empty
-            self.reloadQueue(newContext: newContext, shuffle: self.isShuffled, songs: songs)
+            // we've already faded this song out and stopped it, so we do want a fresh
+            // track to fade in even if the old one also fits the new context
+            self.reloadQueue(newContext: newContext, shuffle: self.isShuffled, songs: songs, keepCurrentSong: false)
 
             guard let newPlayer = self.audioPlayer, self.currentSong != nil else { return }
             newPlayer.volume = 0.0
@@ -400,30 +402,55 @@ class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayerDelegate {
         }
     }
 
-    // Reset the queue upon entering a new location/context
-    public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song]) {
-        
-        songQueue.removeAll()
-        
+    // Reset the queue upon entering a new location/context.
+    // keepCurrentSong defaults to true because most callers — a tag toggle, an import,
+    // a delete — are editing the library underneath a song that is happily playing, and
+    // rebuilding the queue should not yank the player out from under it. Only pass false
+    // when the caller genuinely wants to move to a different track.
+    public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song], keepCurrentSong: Bool = true) {
+
         // add only the new songs to the queue
         songQueue = songs.filter { $0.locations.contains(newContext.rawValue) }
-        
+
         // shuffle if user has the option toggled
         if isShuffled {
             songQueue.shuffle()
         }
-        
-        // reset the current index to 0
-        currentIndex = 0
-        
-        // Set the current song to the first in queue but don't auto-play
-        if !songQueue.isEmpty {
-            currentSong = songQueue[currentIndex]
-            loadAudio(fileName: songQueue[currentIndex].songName)
-            print("Queue loaded with \(songQueue.count) songs")
-        } else {
+
+        // Nothing matches any more, so there is no song left to keep. Tear the player
+        // down instead of leaving a stale currentSong playing a track the queue no
+        // longer contains — otherwise the UI reports a song that isn't in the drawer.
+        guard !songQueue.isEmpty else {
             print("No songs matched the current context")
+            currentIndex = 0
+            currentSong = nil
+            stopPlaybackTimer()
+            audioPlayer?.stop()
+            audioPlayer = nil
+            isPaused = true
+            songLength = 0.0
+            currentTime = 0.0
+            updateNowPlayingInfo()
+            return
         }
+
+        // If the song that's playing survived the rebuild, just follow it to its new
+        // index and leave audioPlayer alone. Calling loadAudio here would construct a
+        // fresh AVAudioPlayer and deallocate the one mid-song, which is why toggling a
+        // single context chip used to stop the music.
+        if keepCurrentSong,
+           let playing = currentSong,
+           let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) {
+            currentIndex = index
+            print("Queue reloaded with \(songQueue.count) songs, still playing \(playing.songName)")
+            return
+        }
+
+        // Otherwise start at the top of the new queue, but don't auto-play
+        currentIndex = 0
+        currentSong = songQueue[currentIndex]
+        loadAudio(fileName: songQueue[currentIndex].songName)
+        print("Queue loaded with \(songQueue.count) songs")
     }
     
     // Timer management for playback progress
