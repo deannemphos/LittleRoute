@@ -1,0 +1,38 @@
+name: Unsigned IPA
+
+# Builds an unsigned LittleRoute.ipa for sideloading with `xtool install`,
+# since SwiftData's macros only exist inside Xcode.
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          # The Music folder is gitignored but referenced by the project
+          mkdir -p LittleRoute/Music
+          xcodebuild build \
+            -project LittleRoute.xcodeproj \
+            -scheme LittleRoute \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/LittleRoute.app Payload/
+          # Ad-hoc sign so the entitlements travel with the app; xtool re-signs on install
+          codesign -f -s - --entitlements LittleRoute/LittleRoute.entitlements Payload/LittleRoute.app
+          zip -qry LittleRoute.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LittleRoute-ipa
+          path: LittleRoute.ipa
