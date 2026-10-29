@@ -28,8 +28,9 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/LittleRoute.app Payload/
-          # Ad-hoc sign so the entitlements travel with the app; xtool re-signs on install
-          codesign -f -s - --entitlements LittleRoute/LittleRoute.entitlements Payload/LittleRoute.app
+          # Left unsigned on purpose: xtool can't provision the WeatherKit
+          # entitlement, and an app that claims it fails install verification.
+          # WeatherProvider degrades to "weather disabled" without it.
           zip -qry LittleRoute.ipa Payload
 
       - uses: actions/upload-artifact@v4
