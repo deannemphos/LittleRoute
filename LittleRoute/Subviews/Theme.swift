@@ -11,12 +11,18 @@ import SwiftUI
 enum AppTheme: String, CaseIterable {
     case y2k = "Y2K"
     case minimal = "Minimal"
+    // SapphireTheme.swift's styles key off this case, but the theme isn't wired
+    // into the tokens or ContentView yet, so it stays out of the toggle below.
+    case sapphire = "Sapphire"
 
     static let storageKey = "appTheme"
 
+    // The themes the top-bar toggle cycles through. Add .sapphire once it's wired in.
+    static let selectable: [AppTheme] = [.y2k, .minimal]
+
     var next: AppTheme {
-        let all = AppTheme.allCases
-        return all[(all.firstIndex(of: self)! + 1) % all.count]
+        let all = AppTheme.selectable
+        return all[((all.firstIndex(of: self) ?? -1) + 1) % all.count]
     }
 
     // MARK: - Tokens

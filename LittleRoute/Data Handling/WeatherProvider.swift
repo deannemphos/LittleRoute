@@ -188,7 +188,7 @@ final class WeatherKitProvider: WeatherProviding {
             // <private> would leave this line asserting a diagnosis with the
             // evidence blacked out.
             Log.weather.error("""
-                WeatherKitProvider: WEATHER DISABLED — \(consecutiveFailures) failed fetches, \
+                WeatherKitProvider: WEATHER DISABLED — \(self.consecutiveFailures) failed fetches, \
                 none successful this launch. That pattern means WeatherKit is not provisioned \
                 for \(Bundle.main.bundleIdentifier ?? "this bundle", privacy: .public) rather than that the network \
                 is flaky. The .rainy and .snowy contexts cannot fire until the WeatherKit \
@@ -209,7 +209,7 @@ final class WeatherKitProvider: WeatherProviding {
         // deserves — and if the pattern turns out to be conclusive, the .error
         // above is the one that survives to say so.
         if !diagnosedUnprovisioned {
-            Log.weather.debug("WeatherKitProvider: fetch failed (\(consecutiveFailures) in a row): \(String(describing: error), privacy: .public)")
+            Log.weather.debug("WeatherKitProvider: fetch failed (\(self.consecutiveFailures) in a row): \(String(describing: error), privacy: .public)")
         }
     }
 

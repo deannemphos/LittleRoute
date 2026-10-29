@@ -721,7 +721,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         // it needs .public or the line degrades to "Audio Player is now
         // <private>", which is the worst of both worlds — the noise without the
         // content.
-        Log.playback.debug("Audio Player is now \(isPaused ? "paused" : "playing", privacy: .public)")
+        Log.playback.debug("Audio Player is now \(self.isPaused ? "paused" : "playing", privacy: .public)")
     }
     
     // Start whatever loadAudio just prepared. skip / previous / play(song:) all do the
@@ -1023,7 +1023,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
            let playing = currentSong,
            let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) {
             currentIndex = index
-            Log.playback.debug("Queue reloaded with \(songQueue.count) songs, still playing \(playing.songName, privacy: .public)")
+            Log.playback.debug("Queue reloaded with \(self.songQueue.count) songs, still playing \(playing.songName, privacy: .public)")
             return
         }
 
@@ -1031,7 +1031,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         currentIndex = 0
         currentSong = songQueue[currentIndex]
         loadAudio(fileName: songQueue[currentIndex].songName)
-        Log.playback.debug("Queue loaded with \(songQueue.count) songs")
+        Log.playback.debug("Queue loaded with \(self.songQueue.count) songs")
     }
     
     // Timer management for playback progress.
