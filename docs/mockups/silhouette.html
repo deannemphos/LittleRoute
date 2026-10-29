@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LittleRoute Silhouette</title>
+<style>
+  :root{
+    --primary:#B8F400;   /* volt lime: the ground */
+    --secondary:#0A0A0A; /* ink: the silhouette */
+    --accent:#FFFFFF;    /* the white cord */
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--secondary);font-family:"Inter","Helvetica Neue",Helvetica,Arial,sans-serif;
+       display:flex;gap:56px;justify-content:center;align-items:flex-start;padding:56px 16px;flex-wrap:wrap}
+  .phone{width:390px;height:844px;background:var(--primary);border-radius:54px;position:relative;overflow:hidden;
+         color:var(--secondary);flex:none}
+  .status{height:54px;display:flex;justify-content:space-between;align-items:center;padding:14px 32px 0;
+          font-weight:600;font-size:16px;letter-spacing:-.2px}
+  .status .r{display:flex;gap:6px;align-items:center}
+  .topbar{display:flex;justify-content:space-between;padding:4px 16px 0}
+  .topbar .grp{display:flex}
+  .glyph{width:44px;height:44px;display:grid;place-items:center}
+  .glyph svg{width:21px;height:21px}
+
+  .headline{padding:20px 28px 0}
+  .eyebrow{font-size:13px;font-weight:500;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--secondary)}
+  .context{white-space:nowrap;font-size:64px;font-weight:800;letter-spacing:-3.2px;line-height:.95;margin-top:6px}
+  .recheck{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-size:13px;font-weight:600;
+           height:32px;padding:0 14px;border-radius:16px;background:var(--secondary);color:var(--accent)}
+  .recheck svg{width:13px;height:13px}
+
+  .stage{position:relative;height:256px;margin:28px 0 32px}
+  .disc{position:absolute;left:50%;top:0;width:256px;height:256px;margin-left:-128px;border-radius:50%;
+        background:var(--secondary);display:grid;place-items:center}
+  .disc .map{width:200px;height:200px;border-radius:50%;overflow:hidden}
+  .cord{position:absolute;left:50%;top:256px;width:2px;height:44px;margin-left:-1px;background:var(--accent)}
+
+  .meta{padding:0 28px}
+  .progress{position:relative;height:1px;background:var(--secondary)}
+  .progress .fill{position:absolute;left:0;top:-1.5px;height:4px;background:var(--secondary);border-radius:2px}
+  .progress .knob{position:absolute;top:-7.5px;width:16px;height:16px;border-radius:50%;background:var(--secondary);display:grid;place-items:center}
+  .progress .knob::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent)}
+  .times{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-top:10px;
+         font-variant-numeric:tabular-nums}
+  .title{font-size:26px;font-weight:700;letter-spacing:-.8px;margin-top:22px;line-height:1.1}
+  .artist{font-size:17px;font-weight:400;margin-top:4px}
+
+  .transport{margin:28px 20px 0;height:56px;border-radius:28px;background:var(--secondary);
+             display:flex;align-items:center;padding:0 6px}
+  .seg{flex:1;height:44px;display:grid;place-items:center;color:var(--accent)}
+  .seg svg{width:20px;height:20px}
+  .seg.on{color:var(--primary)}
+  .seg.play{flex:1.35;background:var(--accent);color:var(--secondary);border-radius:22px}
+  .seg.play svg{width:22px;height:22px}
+
+  .lockup{position:absolute;bottom:42px;left:0;right:0;text-align:center}
+  .lockup .tag{font-size:13px;font-weight:400}
+  .lockup .mark{font-size:15px;font-weight:800;letter-spacing:-.4px;margin-top:2px}
+  .home{position:absolute;bottom:8px;left:50%;width:134px;height:5px;margin-left:-67px;border-radius:3px;
+        background:var(--secondary)}
+  .drawer{position:absolute;left:0;top:50%;width:6px;height:56px;margin-top:-28px;border-radius:0 3px 3px 0;
+          background:var(--secondary)}
+  .caption{color:var(--accent);font-size:13px;text-align:center;margin-top:16px;opacity:1}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.4-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="5.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/><rect x="14" y="4" width="4.5" height="16" rx="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M2.5 6.2v11.6a.8.8 0 0 0 1.25.66L12 12.66V17.8a.8.8 0 0 0 1.25.66l8.6-5.8a.8.8 0 0 0 0-1.32l-8.6-5.8A.8.8 0 0 0 12 6.2v5.14L3.75 5.54A.8.8 0 0 0 2.5 6.2z" fill="currentColor"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><g transform="translate(24 0) scale(-1 1)"><use href="#i-next"/></g></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h3.5c2 0 3.2 1 4.3 2.6l2.4 4.8C14.3 16 15.5 17 17.5 17H21"/><path d="M3 17h3.5c1.3 0 2.2-.4 3-1.2"/><path d="M14.2 8.2c.8-.8 1.8-1.2 3.3-1.2H21"/><path d="M18.5 4 21 7l-2.5 3"/><path d="M18.5 14 21 17l-2.5 3"/></g></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h12M4 11h12M4 16h7"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M20 17.5V9l-2.5 1"/></g></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></g></symbol>
+    <symbol id="i-brush" viewBox="0 0 24 24"><path d="M20.7 3.3a1.6 1.6 0 0 0-2.3 0l-8.2 8.4 2.1 2.1 8.4-8.2a1.6 1.6 0 0 0 0-2.3zM8.6 13.1c-2 0-3.4 1.5-3.4 3.4 0 1.5-1 2.4-2.2 2.9 1 .9 2.4 1.4 4 1.4 2.9 0 5-2.1 5-4.6z" fill="currentColor"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-14.2 5"/><path d="M4 12a8 8 0 0 1 14.2-5"/><path d="M18.5 3v4.2h-4.2"/><path d="M5.5 21v-4.2h4.2"/></g></symbol>
+  </defs>
+</svg>
+
+<!-- duotone map: ink ground, lime streets, white you-are-here -->
+<template id="map">
+  <svg viewBox="0 0 200 200" width="200" height="200">
+    <rect width="200" height="200" fill="#0A0A0A"/>
+    <g stroke="#B8F400" fill="none" stroke-linecap="round">
+      <path d="M-10 62 L210 48" stroke-width="5"/>
+      <path d="M-10 150 L210 132" stroke-width="3"/>
+      <path d="M58 -10 L74 210" stroke-width="3"/>
+      <path d="M140 -10 C128 60 150 120 132 210" stroke-width="5"/>
+      <path d="M-10 104 L210 100" stroke-width="1.5"/>
+      <path d="M100 -10 L104 210" stroke-width="1.5"/>
+      <path d="M20 -10 L30 210" stroke-width="1.2"/>
+      <path d="M176 -10 L170 210" stroke-width="1.2"/>
+      <path d="M-10 18 L210 10" stroke-width="1.2"/>
+      <path d="M-10 186 L210 176" stroke-width="1.2"/>
+    </g>
+    <rect x="112" y="116" width="44" height="34" rx="10" fill="#B8F400"/>
+    <circle cx="104" cy="96" r="22" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+    <circle cx="104" cy="96" r="7" fill="#FFFFFF"/>
+  </svg>
+</template>
+
+<div>
+  <div class="phone" id="p1">
+    <div class="status"><span>9:41</span><span class="r">
+      <svg width="18" height="11" viewBox="0 0 18 11"><g fill="#0A0A0A"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></g></svg>
+      <svg width="26" height="12" viewBox="0 0 26 12"><rect x=".5" y=".5" width="22" height="11" rx="3" fill="none" stroke="#0A0A0A"/><rect x="2" y="2" width="16" height="8" rx="1.6" fill="#0A0A0A"/><rect x="23.5" y="4" width="1.6" height="4" rx=".8" fill="#0A0A0A"/></svg>
+    </span></div>
+
+    <div class="topbar">
+      <div class="grp">
+        <div class="glyph"><svg><use href="#i-list"/></svg></div>
+        <div class="glyph"><svg><use href="#i-plus"/></svg></div>
+      </div>
+      <div class="glyph"><svg><use href="#i-brush"/></svg></div>
+    </div>
+
+    <div class="headline">
+      <div class="eyebrow"><span class="dot"></span>now playing in</div>
+      <div class="context">Parks.</div>
+      <div class="recheck"><svg><use href="#i-refresh"/></svg>Recheck surroundings</div>
+    </div>
+
+    <div class="stage">
+      <div class="disc"><div class="map" data-map></div></div>
+          </div>
+
+    <div class="meta">
+      <div class="progress"><div class="fill" style="width:38%"></div><div class="knob" style="left:calc(38% - 8px)"></div></div>
+      <div class="times"><span>1:24</span><span>−2:17</span></div>
+      <div class="title">Golden Hour Bicycle</div>
+      <div class="artist">The Weekend Lanes</div>
+    </div>
+
+    <div class="transport">
+      <div class="seg on"><svg><use href="#i-shuffle"/></svg></div>
+      <div class="seg"><svg><use href="#i-prev"/></svg></div>
+      <div class="seg play"><svg><use href="#i-pause"/></svg></div>
+      <div class="seg"><svg><use href="#i-next"/></svg></div>
+    </div>
+
+    <div class="lockup">
+      <div class="tag">Music for wherever you are.</div>
+      <div class="mark">LittleRoute</div>
+    </div>
+    <div class="drawer"></div>
+    <div class="home"></div>
+  </div>
+  <div class="caption">Playing · shuffle on</div>
+</div>
+
+<div>
+  <div class="phone" id="p2">
+    <div class="status"><span>9:41</span><span class="r">
+      <svg width="18" height="11" viewBox="0 0 18 11"><g fill="#0A0A0A"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></g></svg>
+      <svg width="26" height="12" viewBox="0 0 26 12"><rect x=".5" y=".5" width="22" height="11" rx="3" fill="none" stroke="#0A0A0A"/><rect x="2" y="2" width="16" height="8" rx="1.6" fill="#0A0A0A"/><rect x="23.5" y="4" width="1.6" height="4" rx=".8" fill="#0A0A0A"/></svg>
+    </span></div>
+
+    <div class="topbar">
+      <div class="grp">
+        <div class="glyph"><svg><use href="#i-list"/></svg></div>
+        <div class="glyph"><svg><use href="#i-plus"/></svg></div>
+      </div>
+      <div class="glyph"><svg><use href="#i-brush"/></svg></div>
+    </div>
+
+    <div class="headline">
+      <div class="eyebrow"><span class="dot"></span>now playing in</div>
+      <div class="context">Restaurants.</div>
+      <div class="recheck"><svg><use href="#i-refresh"/></svg>Recheck surroundings</div>
+    </div>
+
+    <div class="stage">
+      <div class="disc"><div class="map" data-map></div></div>
+          </div>
+
+    <div class="meta">
+      <div class="progress"><div class="fill" style="width:72%"></div><div class="knob" style="left:calc(72% - 8px)"></div></div>
+      <div class="times"><span>2:51</span><span>−1:06</span></div>
+      <div class="title">Table for Two, Window Seat</div>
+      <div class="artist">Mono Supper Club</div>
+    </div>
+
+    <div class="transport">
+      <div class="seg"><svg><use href="#i-shuffle"/></svg></div>
+      <div class="seg"><svg><use href="#i-prev"/></svg></div>
+      <div class="seg play"><svg><use href="#i-play"/></svg></div>
+      <div class="seg"><svg><use href="#i-next"/></svg></div>
+    </div>
+
+    <div class="lockup">
+      <div class="tag">Music for wherever you are.</div>
+      <div class="mark">LittleRoute</div>
+    </div>
+    <div class="drawer"></div>
+    <div class="home"></div>
+  </div>
+  <div class="caption">Paused · shuffle off · long context name</div>
+</div>
+
+<script>
+  // ad-style headline: as big as it can be, shrinking only when the word won't fit
+  document.querySelectorAll('.context').forEach(el => {
+    let size = 64;
+    while (el.scrollWidth > el.clientWidth && size > 36) { size -= 1; el.style.fontSize = size + 'px'; el.style.letterSpacing = (-size*0.05)+'px'; }
+  });
+  const t = document.getElementById('map');
+  document.querySelectorAll('[data-map]').forEach(el => el.appendChild(t.content.cloneNode(true)));
+</script>
+</body>
+</html>
