@@ -10,7 +10,7 @@
 import SwiftUI
 
 struct ContextRingView: View {
-    var context: AudioPlayerManager.Context
+    var context: MusicContext
     let diameter: CGFloat
     var color: Color
 
@@ -37,5 +37,8 @@ struct ContextRingView: View {
                 }
             }
             .allowsHitTesting(false)
+            // purely ambient: the context it's tinted for is spoken by the label
+            // right underneath it, so this would just be a stop with nothing to say
+            .accessibilityHidden(true)
     }
 }

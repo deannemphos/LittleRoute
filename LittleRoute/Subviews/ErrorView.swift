@@ -28,14 +28,20 @@ struct ErrorView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 56))
+                // rides largeTitle, the shallowest curve there is, because this is
+                // a 56pt glyph already — on caption's curve it would be 200pt at
+                // the top accessibility sizes and push the retry button off screen
+                .scaledFont(size: 56.0, relativeTo: .largeTitle)
                 .foregroundColor(.red)
                 .padding(.bottom, 10)
-            
+                .accessibilityHidden(true) // decoration; the title states the problem
+
             Text(errorTitle)
                 .font(.title)
                 .fontWeight(.bold)
                 .multilineTextAlignment(.center)
+                // first thing focus should land on, and the thing to jump back to
+                .accessibilityAddTraits(.isHeader)
             
             Text(errorMessage)
                 .font(.body)
@@ -53,6 +59,9 @@ struct ErrorView: View {
                     .foregroundColor(.primary)
                     .multilineTextAlignment(.leading)
             }
+            // "How to fix:" on its own is a dangling fragment — read the heading and
+            // the steps as one passage so a swipe doesn't split them apart
+            .accessibilityElement(children: .combine)
             .padding()
             .background(
                 RoundedRectangle(cornerRadius: 12)

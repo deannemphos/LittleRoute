@@ -32,6 +32,11 @@ playground.xcworkspace
 .build/
 *.md
 
+# Claude Code agent worktrees — machine-local scratch checkouts.
+# Scoped to worktrees/ rather than all of .claude/ so project-level
+# settings or skills can still be committed later if wanted.
+.claude/worktrees/
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However

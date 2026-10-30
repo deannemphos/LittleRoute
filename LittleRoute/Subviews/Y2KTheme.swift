@@ -45,6 +45,8 @@ struct Y2KGlossyButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            // sized to the bubble, not to Dynamic Type — see the note on
+            // ThemedRoundButtonStyle for why the transport glyphs sit this out
             .font(.system(size: size * 0.38, weight: .bold))
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
@@ -94,7 +96,9 @@ struct Y2KPillButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .heavy, design: .rounded))
+            // the y2k half of the shared .pillLabel role; ThemedPillButtonStyle
+            // routes here, so both themes grow at the same rate by construction
+            .themedFont(.pillLabel, theme: .y2k)
             .foregroundStyle(isActive ? .white : Y2K.chromeDark)
             .shadow(color: isActive ? .black.opacity(0.3) : .clear, radius: 1, y: 1)
             .padding(.horizontal, 18)

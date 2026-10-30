@@ -11,28 +11,46 @@ import SwiftData
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @ObservedObject private var audioManager = AudioPlayerManager.shared
+    // A plain reference to the singleton: the view doesn't own it, and with
+    // @Observable a wrapper buys nothing -- SwiftUI tracks whichever properties
+    // this body reads on its own.
+    private let audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     @Query private var songs: [Song]
     @State private var showFileImporter = false
-    @State private var expandedSongs: Set<String> = [] // songNames with the context picker shown
+    // Songs with the context picker shown, held by model ID rather than by
+    // songName. The two answer the same question now that songName is
+    // constrained unique, but only one of them keeps answering it if a later
+    // version ever lets a song be renamed: a set keyed on the name would leave
+    // the wrong card open, or none.
+    @State private var expandedSongs: Set<PersistentIdentifier> = []
 
     @AppStorage(AppTheme.storageKey) private var themeRaw = AppTheme.minimal.rawValue
     private var theme: AppTheme { AppTheme.current(from: themeRaw) }
 
-    // Songs whose mp3 lives in the imported music directory
+    // The tag grid packs as many chips per row as fit at this width. It has to
+    // grow with the chip's own text or the labels start shrinking away as soon
+    // as the user turns their text size up.
+    @ScaledMetric(relativeTo: .caption) private var chipMinWidth: CGFloat = 92.0
+
+    // Songs whose mp3 lives in the imported music directory.
+    //
+    // This used to ask the filesystem — a synchronous fileExists per song, on
+    // the main thread, re-run every time the List below re-evaluated. The answer
+    // is recorded on the model at import time now, so this is a filter over an
+    // array that is already in memory.
+    //
+    // Still a filter over the full @Query rather than a predicated one, because
+    // toggleTag and deleteSong hand `songs` to reloadQueue and that genuinely
+    // wants the whole library — narrowing the query would quietly drop every
+    // bundled song out of the playback queue.
     private var importedSongs: [Song] {
-        songs.filter { song in
-            FileManager.default.fileExists(
-                atPath: AudioPlayerManager.importedMusicDirectory
-                    .appendingPathComponent("\(song.songName).mp3").path
-            )
-        }
+        songs.filter(\.isImported)
     }
 
-    private let allContexts: [AudioPlayerManager.Context] = [
+    private let allContexts: [MusicContext] = [
         .all, .gym, .restaurant, .store, .park, .home, .work,
         .street, .driving, .beach, .mountain, .city, .town, .water,
         .rainy, .snowy, .traveling
@@ -49,8 +67,9 @@ struct LibraryView: View {
                 if importedSongs.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "music.note.house")
-                            .font(.system(size: 44))
+                            .themedFont(.emptyStateGlyph, theme: theme)
                             .foregroundStyle(theme.secondaryText)
+                            .accessibilityHidden(true) // the two lines below say it in words
                         Text("No imported songs yet")
                             .font(.headline)
                             .foregroundStyle(theme.primaryText)
@@ -60,7 +79,13 @@ struct LibraryView: View {
                     }
                 } else {
                     List {
-                        ForEach(importedSongs, id: \.songName) { song in
+                        // Identified by the model's own ID, not by songName. The
+                        // name is unique in the store as of LR-16, so the two
+                        // agree — but the ID is the store's answer to "which row
+                        // is this" and the name is a field that happens to be
+                        // unique, and a List whose rows carry swipe-to-delete
+                        // should be reading identity from the former.
+                        ForEach(importedSongs, id: \.persistentModelID) { song in
                             songCard(song)
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
@@ -111,40 +136,46 @@ struct LibraryView: View {
 
     // Card showing a song with a collapsible context tag section
     private func songCard(_ song: Song) -> some View {
-        let isExpanded = expandedSongs.contains(song.songName)
+        let isExpanded = expandedSongs.contains(song.persistentModelID)
         return VStack(alignment: .leading, spacing: 10) {
             Button {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     if isExpanded {
-                        expandedSongs.remove(song.songName)
+                        expandedSongs.remove(song.persistentModelID)
                     } else {
-                        expandedSongs.insert(song.songName)
+                        expandedSongs.insert(song.persistentModelID)
                     }
                 }
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(song.title)
-                            .font(.system(size: 16, weight: .semibold, design: theme == .y2k ? .rounded : .default))
+                            .themedFont(.cardTitle, theme: theme)
                             .foregroundStyle(theme == .y2k ? Y2K.chromeDark : .primary)
                         Text(song.artist ?? "Unknown Artist")
-                            .font(.system(size: 13))
+                            .themedFont(.cardSubtitle, theme: theme)
                             .foregroundStyle(theme == .y2k ? Y2K.chromeDark.opacity(0.7) : .secondary)
                     }
                     Spacer()
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 13, weight: .semibold))
+                        .themedFont(.disclosureGlyph, theme: theme)
                         .foregroundStyle(theme == .y2k ? Y2K.chromeDark.opacity(0.7) : .secondary)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        .accessibilityHidden(true) // its rotation is the disclosure state, said below
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(song.title), \(song.artist ?? "Unknown Artist")")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the context tags for this song.")
 
             // Context tag chips (collapsible)
             if isExpanded {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                    ForEach(allContexts, id: \.rawValue) { context in
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: chipMinWidth), spacing: 8)], spacing: 8) {
+                    // keyed on the storage key rather than the label, so
+                    // rewording a chip doesn't tear down and rebuild the grid
+                    ForEach(allContexts, id: \.storageKey) { context in
                         contextChip(song: song, context: context)
                     }
                 }
@@ -162,14 +193,17 @@ struct LibraryView: View {
         )
     }
 
-    private func contextChip(song: Song, context: AudioPlayerManager.Context) -> some View {
-        let isTagged = song.locations.contains(context.rawValue)
+    private func contextChip(song: Song, context: MusicContext) -> some View {
+        let isTagged = song.isTagged(context)
         return Button {
             toggleTag(song: song, context: context)
         } label: {
-            Text(context.rawValue)
-                .font(.system(size: 12, weight: .semibold, design: theme == .y2k ? .rounded : .default))
+            Text(context.displayName)
+                .themedFont(.chipLabel, theme: theme)
                 .lineLimit(1)
+                // context names are single words, so shrinking beats truncating
+                // once the chip stops being able to grow with the type
+                .minimumScaleFactor(0.75)
                 .foregroundStyle(
                     isTagged
                     ? (theme == .y2k ? Color.white : Color(.systemBackground))
@@ -195,14 +229,13 @@ struct LibraryView: View {
                 )
         }
         .buttonStyle(.plain)
+        // whether the tag is on is carried entirely by the capsule fill
+        .accessibilityValue(isTagged ? "On" : "Off")
+        .accessibilityHint("Toggles whether this song plays in the \(context.displayName) context.")
     }
 
-    private func toggleTag(song: Song, context: AudioPlayerManager.Context) {
-        if let index = song.locations.firstIndex(of: context.rawValue) {
-            song.locations.remove(at: index)
-        } else {
-            song.locations.append(context.rawValue)
-        }
+    private func toggleTag(song: Song, context: MusicContext) {
+        song.setTagged(context, !song.isTagged(context))
         try? modelContext.save()
         // Refresh the queue so tag changes take effect immediately
         audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
@@ -214,7 +247,8 @@ struct LibraryView: View {
             .appendingPathComponent("\(song.songName).mp3")
         try? FileManager.default.removeItem(at: fileURL)
 
-        expandedSongs.remove(song.songName)
+        // before the delete, while the model still has an ID to look up
+        expandedSongs.remove(song.persistentModelID)
         modelContext.delete(song)
         try? modelContext.save()
 
