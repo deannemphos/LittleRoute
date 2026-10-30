@@ -61,6 +61,7 @@ struct LittleRouteApp: App {
     // here has to be the strong owner of LocationHandler too.
     @State private var locationHandler: LocationHandler
     @State private var contextDetector: ContextDetector
+    @State private var playbackCoordinator: PlaybackCoordinator
 
     // MARK: - Persistence
     //
@@ -98,9 +99,16 @@ struct LittleRouteApp: App {
         // is a live dependency hiding in a signature. This is the one place a
         // real one gets built; tests pass nil.
         let handler = LocationHandler()
+        let detector = ContextDetector(poiProvider: handler, weatherProvider: WeatherKitProvider())
+        let coordinator = PlaybackCoordinator(detector: detector, audio: AudioPlayerManager.shared,
+                                              modelContext: container.mainContext, storeHealth: health)
         _locationHandler = State(initialValue: handler)
-        _contextDetector = State(initialValue: ContextDetector(poiProvider: handler,
-                                                               weatherProvider: WeatherKitProvider()))
+        _contextDetector = State(initialValue: detector)
+        _playbackCoordinator = State(initialValue: coordinator)
+        if !PlaybackCoordinator.isTesting {
+            coordinator.start()
+            handler.startLocationUpdates()
+        }
     }
 
     // MARK: - Container construction
@@ -126,6 +134,15 @@ struct LittleRouteApp: App {
         let schema = Schema(versionedSchema: SongSchemaV5.self)
 
         do {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+                let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+                let container = try ModelContainer(for: schema, configurations: [configuration])
+                let health: ModelStoreHealth = ProcessInfo.processInfo.arguments.contains("--store-unavailable")
+                    ? .inMemory(reason: "UI test fixture") : .onDisk
+                return (container, health)
+            }
+            #endif
             let onDisk = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             let container = try ModelContainer(for: schema,
                                                migrationPlan: SongMigrationPlan.self,

@@ -17,9 +17,14 @@ struct LibraryView: View {
     private let audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelStoreHealth) private var storeHealth
 
     @Query private var songs: [Song]
     @State private var showFileImporter = false
+    @State private var searchText = ""
+    @State private var sortByArtist = false
+    @State private var replacingExisting = false
+    @State private var pendingDeletion: Song?
     // Songs with the context picker shown, held by model ID rather than by
     // songName. The two answer the same question now that songName is
     // constrained unique, but only one of them keeps answering it if a later
@@ -42,12 +47,30 @@ struct LibraryView: View {
     // is recorded on the model at import time now, so this is a filter over an
     // array that is already in memory.
     //
-    // Still a filter over the full @Query rather than a predicated one, because
-    // toggleTag and deleteSong hand `songs` to reloadQueue and that genuinely
-    // wants the whole library — narrowing the query would quietly drop every
-    // bundled song out of the playback queue.
+    // Search/sort affect only visibleSongs. Playback updates independently fetch
+    // the complete library, including bundled songs.
     private var importedSongs: [Song] {
         songs.filter(\.isImported)
+    }
+
+    private var visibleSongs: [Song] {
+        importedSongs.filter { song in
+            searchText.isEmpty || song.title.localizedStandardContains(searchText)
+                || (song.artist ?? "").localizedStandardContains(searchText)
+                || song.songName.localizedStandardContains(searchText)
+        }.sorted { left, right in
+            let leftFields = sortByArtist
+                ? [left.artist ?? "", left.title, left.songName]
+                : [left.title, left.artist ?? "", left.songName]
+            let rightFields = sortByArtist
+                ? [right.artist ?? "", right.title, right.songName]
+                : [right.title, right.artist ?? "", right.songName]
+            for (lhs, rhs) in zip(leftFields, rightFields) {
+                let comparison = lhs.localizedStandardCompare(rhs)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+            }
+            return left.songName < right.songName
+        }
     }
 
     private let allContexts: [MusicContext] = [
@@ -64,7 +87,14 @@ struct LibraryView: View {
                     .filmGrain(intensity: theme.grainIntensity)
                     .ignoresSafeArea()
 
-                if importedSongs.isEmpty {
+                if storeHealth.isDegraded {
+                    ContentUnavailableView(
+                        "Library Unavailable",
+                        systemImage: "externaldrive.badge.exclamationmark",
+                        description: Text("Your saved library could not be opened. Importing and editing are disabled to prevent unsaved changes. Your library has not been deleted. Close and reopen LittleRoute to retry.")
+                    )
+                    .accessibilityIdentifier("libraryUnavailable")
+                } else if importedSongs.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "music.note.house")
                             .themedFont(.emptyStateGlyph, theme: theme)
@@ -85,18 +115,27 @@ struct LibraryView: View {
                         // is this" and the name is a field that happens to be
                         // unique, and a List whose rows carry swipe-to-delete
                         // should be reading identity from the former.
-                        ForEach(importedSongs, id: \.persistentModelID) { song in
+                        if visibleSongs.isEmpty {
+                            ContentUnavailableView.search(text: searchText)
+                        }
+                        ForEach(visibleSongs, id: \.persistentModelID) { song in
                             songCard(song)
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
                                 .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
-                                        deleteSong(song)
+                                        pendingDeletion = song
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
+                                    .disabled(audioManager.isImporting || storeHealth.isDegraded)
                                 }
+                        }
+                        Section {
+                            Text("Automatic place tags: Beaches, Gyms, Restaurants, Stores, Parks and Cities. Rainy and Snowy depend on weather; Traveling covers travel or no nearby place. All is used only when there are no exact context matches. Home, Work, Streets, Driving, Mountains, Towns and Water are preserved tags without automatic detection.")
+                                .font(.footnote)
+                                .foregroundStyle(theme.secondaryText)
                         }
                     }
                     .listStyle(.plain)
@@ -105,17 +144,69 @@ struct LibraryView: View {
             }
             .navigationTitle("My Music")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Title, artist or filename")
+            .safeAreaInset(edge: .bottom) {
+                if !storeHealth.isDegraded, audioManager.isImporting || audioManager.importReport != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if audioManager.isImporting {
+                            ProgressView("Importing music", value: audioManager.importProgress)
+                        }
+                        if let report = audioManager.importReport {
+                            ScrollView {
+                                Text(report)
+                                    .font(.footnote)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: 140)
+                            .accessibilityIdentifier("importReport")
+                        }
+                        if !audioManager.isImporting {
+                            Button("Dismiss Report") { audioManager.importReport = nil }
+                        }
+                    }
+                    .padding()
+                    .background(.regularMaterial)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showFileImporter = true
+                    Menu {
+                        Button("Import MP3s") {
+                            replacingExisting = false
+                            showFileImporter = true
+                        }
+                        Button("Replace Matching Imports") {
+                            replacingExisting = true
+                            showFileImporter = true
+                        }
                     } label: {
                         Label("Import", systemImage: "plus")
                     }
+                    .disabled(storeHealth.isDegraded || audioManager.isImporting)
                 }
+                ToolbarItem(placement: .bottomBar) {
+                    Picker("Sort songs", selection: $sortByArtist) {
+                        Text("Title").tag(false)
+                        Text("Artist").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(storeHealth.isDegraded)
+                }
+            }
+            .confirmationDialog("Delete imported song?", isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ), titleVisibility: .visible, presenting: pendingDeletion) { song in
+                Button("Delete Song", role: .destructive) {
+                    deleteSong(song)
+                    pendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            } message: { song in
+                Text("Remove “\(song.title)” and its imported audio? Keep your original file to import it again. A bundled copy, if present, will be kept.")
             }
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -124,11 +215,14 @@ struct LibraryView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
+                    guard !storeHealth.isDegraded else { return }
+                    let replace = replacingExisting
                     Task {
-                        await audioManager.importSongs(from: urls, modelContext: modelContext)
+                        await audioManager.importSongs(from: urls, modelContext: modelContext,
+                                                       replacingExisting: replace)
                     }
                 case .failure(let error):
-                    print("File import failed: \(error)")
+                    audioManager.importReport = "Could not open the selected files: \(error.localizedDescription). Choose Import to retry."
                 }
             }
         }
@@ -166,12 +260,16 @@ struct LibraryView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(storeHealth.isDegraded || audioManager.isImporting)
             .accessibilityLabel("\(song.title), \(song.artist ?? "Unknown Artist")")
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows or hides the context tags for this song.")
 
             // Context tag chips (collapsible)
             if isExpanded {
+                Text("Imported audio: \(song.songName).mp3")
+                    .font(.caption)
+                    .foregroundStyle(theme.secondaryText)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: chipMinWidth), spacing: 8)], spacing: 8) {
                     // keyed on the storage key rather than the label, so
                     // rewording a chip doesn't tear down and rebuild the grid
@@ -229,30 +327,39 @@ struct LibraryView: View {
                 )
         }
         .buttonStyle(.plain)
+        .disabled(storeHealth.isDegraded || audioManager.isImporting)
         // whether the tag is on is carried entirely by the capsule fill
         .accessibilityValue(isTagged ? "On" : "Off")
         .accessibilityHint("Toggles whether this song plays in the \(context.displayName) context.")
     }
 
     private func toggleTag(song: Song, context: MusicContext) {
+        guard !storeHealth.isDegraded, !audioManager.isImporting else { return }
+        let previousTags = song.locations
         song.setTagged(context, !song.isTagged(context))
-        try? modelContext.save()
-        // Refresh the queue so tag changes take effect immediately
-        audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
+        do {
+            try modelContext.save()
+        } catch {
+            song.locations = previousTags
+            audioManager.importReport = "Could not save tags for “\(song.title)”: \(error.localizedDescription). Your previous tags were restored; try again."
+            return
+        }
+        do {
+            let reader = ModelContext(modelContext.container)
+            let library = try reader.fetch(FetchDescriptor<Song>())
+            audioManager.reloadQueue(newContext: audioManager.currentContext,
+                                     shuffle: audioManager.isShuffled, songs: library)
+        } catch {
+            audioManager.importReport = "Tags were saved, but playback could not refresh its library: \(error.localizedDescription). Reopen LittleRoute to retry."
+        }
     }
 
     // Delete the song record and its mp3 from the imported music directory
     private func deleteSong(_ song: Song) {
-        let fileURL = AudioPlayerManager.importedMusicDirectory
-            .appendingPathComponent("\(song.songName).mp3")
-        try? FileManager.default.removeItem(at: fileURL)
-
-        // before the delete, while the model still has an ID to look up
-        expandedSongs.remove(song.persistentModelID)
-        modelContext.delete(song)
-        try? modelContext.save()
-
-        // Refresh the queue so the deleted song can't keep playing from it
-        audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs.filter { $0 !== song })
+        guard !storeHealth.isDegraded, !audioManager.isImporting else { return }
+        let identifier = song.persistentModelID
+        if audioManager.deleteImportedSong(song, modelContext: modelContext) {
+            expandedSongs.remove(identifier)
+        }
     }
 }

@@ -87,6 +87,7 @@ enum Log {
     // which is a completely different thing that this code also deals in. The
     // ambiguity is not worth the one-time convenience.
     static let poiSearch = OSSignposter(subsystem: subsystem, category: "poi-search")
+    static let zoneGeometry = OSSignposter(subsystem: subsystem, category: "zone-geometry")
 }
 
 // MARK: - A note on privacy, since it is the easy thing to get wrong

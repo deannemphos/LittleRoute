@@ -23,7 +23,7 @@ struct ContextClassifier {
     // Weather and speed are live; heart rate / running state are still stubs.
     struct Factors {
         // Simplified weather buckets
-        enum Condition {
+        enum Condition: Equatable, Sendable {
             case clear
             case rainy
             case snowy
@@ -139,7 +139,7 @@ struct ContextClassifier {
     // Folds the weather into a set of POI scores: damp what the weather spoils,
     // then let the weather itself stand on the board as one more candidate.
     // Returns the scores untouched in fair weather, so the common path is free.
-    private static func applyWeather(to scores: [MusicContext: Double],
+    static func applyWeather(to scores: [MusicContext: Double],
                                      condition: Factors.Condition?) -> [MusicContext: Double] {
         guard let weather = weatherContext(for: condition) else { return scores }
 
@@ -285,12 +285,7 @@ struct ContextClassifier {
         // The strongest POI defines most of a context's score. Additional nearby
         // POIs add limited evidence so dense restaurant/store clusters do not win
         // solely because those categories are more common in MapKit.
-        let poiScores = contributions.mapValues { values in
-            let sorted = values.sorted(by: >)
-            return sorted.enumerated().reduce(0) { total, entry in
-                total + entry.element * pow(0.25, Double(entry.offset))
-            }
-        }
+        let poiScores = contributions.mapValues { ContextZoneGeometry.score(contributions: $0) }
 
         // Weather joins the scoring here rather than replacing its result:
         // it damps the contexts it spoils and then competes for the win. Sits
@@ -332,8 +327,8 @@ struct ContextClassifier {
     // reshuffling it. (It does mean today's tiebreak order differs from the
     // pre-LR-15 one — "gym" sorts against "restaurant" now rather than "Gyms"
     // against "Restaurants" — which only shows up on exactly equal scores.)
-    private static func winner(of scores: [MusicContext: Double]) -> MusicContext? {
-        scores.max { lhs, rhs in
+    static func winner(of scores: [MusicContext: Double]) -> MusicContext? {
+        scores.filter { $0.value > 0 }.max { lhs, rhs in
             if lhs.value == rhs.value {
                 return lhs.key.storageKey > rhs.key.storageKey
             }

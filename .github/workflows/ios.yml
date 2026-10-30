@@ -10,6 +10,7 @@ jobs:
   build:
     name: Build and Test LittleRoute
     runs-on: macos-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -60,6 +61,9 @@ jobs:
             -destination "$DESTINATION" \
             -derivedDataPath build \
             -resultBundlePath TestResults.xcresult \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 120 \
             CODE_SIGNING_ALLOWED=NO
       - uses: actions/upload-artifact@v4
         if: always()

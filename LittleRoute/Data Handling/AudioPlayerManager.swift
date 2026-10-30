@@ -1,377 +1,157 @@
-//
-//  AudioPlayerManager.swift
-//  LittleRoute
-//
-//  Created by Dean Nemphos on 5/7/25.
-//
-
 import Foundation
 import AVFoundation
 import MediaPlayer
-import SwiftUI
 import Observation
+import SwiftData
 import os
-import _SwiftData_SwiftUI
 
-// Everything on this class expects to be called from the main thread. It writes
-// observable state that SwiftUI reads there, and it schedules its progress Timer on
-// whatever run loop the caller happens to be on. Every Swift caller is view code, so
-// they already satisfy that. The three ways in from outside Swift can't promise it —
-// the AVAudioPlayerDelegate callback, the AVAudioSession notification selectors, and
-// the MPRemoteCommandCenter blocks all arrive on a thread of the system's choosing —
-// so each of those hops onto main itself before touching anything here.
-//
-// MARK: Strict concurrency, and why the obvious annotation is missing
-//
-// This file holds most of the hops in the app and is the obvious candidate for
-// @MainActor. It deliberately does not carry it. Under targeted checking every
-// DispatchQueue.main.async below captures a self that is not Sendable inside a
-// @Sendable closure, and every one of them is reported. Those reports are all the
-// same report, and it is a report about an annotation that is missing rather than
-// about the hops, which are correct as written.
-//
-// What the annotation would actually cost, in the order it bites:
-//
-//   1. It does not silence the hops. It inverts them. A DispatchQueue.main.async
-//      block is a nonisolated closure no matter which actor the enclosing type
-//      belongs to, so `self.skip()` inside one stops being a non-Sendable capture
-//      and starts being a call to a main-actor method from a nonisolated context —
-//      an error where there was a warning. Each of the eight bodies would need
-//      MainActor.assumeIsolated around it. That is the right spelling, and we have
-//      genuinely just hopped so it would hold, but it is eight more places to get
-//      right with nothing to check the work.
-//
-//   2. The six doors from outside Swift would have to be marked nonisolated and
-//      keep their hops regardless. Actor isolation is not enforced across the ObjC
-//      runtime: audioPlayerDidFinishPlaying, the two #selector handlers, and the
-//      three MPRemoteCommandCenter blocks are called by AVFoundation,
-//      NotificationCenter and MediaPlayer on threads of their own choosing, and
-//      @MainActor would only make the compiler *believe* they arrive on main. The
-//      hop is the guarantee; the annotation is a claim about it. Deleting a hop
-//      because "the class is @MainActor now" is the one edit here that converts a
-//      warning into a real crash — and it is precisely the edit the annotation
-//      invites, which is the reason this paragraph is longer than the others.
-//
-//   3. coordinatedCopy would need a nonisolated of its own. importSongs runs it
-//      inside a Task.detached, and a main-actor static is not callable from there.
-//
-//   4. `shared` becomes main-actor isolated, and both ContentView and LibraryView
-//      read it from a stored-property initialiser — `private let audioManager =
-//      AudioPlayerManager.shared` — which is not a main-actor context unless the
-//      View conformance makes it one. Whether it does is the part that cannot be
-//      settled by reading: SwiftUI declares View as @MainActor @preconcurrency, so
-//      the isolation may already be inferred onto both structs and the question may
-//      be moot; or it may want @MainActor spelled out on them; or nonisolated(unsafe)
-//      on `shared`. Three plausible answers, and the only thing that can pick
-//      between them is a compiler.
-//
-// So: no annotation, the hops stay exactly as they are, and the warnings stand with
-// this note attached to them. A warning nobody wrote down is a warning the next
-// person investigates from scratch. This one has been investigated, and the finding
-// is that silencing it blind costs more than carrying it.
-//
-// One likely diagnostic in this file is not about the hops at all. `shared` is
-// static storage of a non-Sendable type, which complete mode certainly objects to
-// and targeted mode may. If it does, the fix is one word — `nonisolated(unsafe)
-// static let shared` — and it is an honest word here rather than a silencing one:
-// the reference itself is immutable, and what it points at is protected by the
-// main-thread convention at the top of this comment rather than by anything the
-// compiler is in a position to see.
+@MainActor
 @Observable
 class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
-
-    var isPaused: Bool = false
-    var isShuffled: Bool = false
-    var songLength: TimeInterval = 0.0   // total length of the song
-    // Rewritten twice a second by the playback timer. Under ObservableObject that
-    // made this the most expensive property in the app: every tick fired
-    // objectWillChange, and any view observing the manager was invalidated whether
-    // or not it had ever read the clock — which took the map, its zone overlays and
-    // both CurvedText arcs down with it. Observation tracks reads per property, so
-    // a tick now reaches only the progress bar and the lock-screen sync.
-    var currentTime: TimeInterval = 0.0  // current playback time
+    var isPaused = true
+    var isShuffled = false
+    var songLength: TimeInterval = 0
+    var currentTime: TimeInterval = 0
     var currentContext: MusicContext = .all
-    var currentSong: Song? = nil // the currently playing song, if any
+    var currentSong: Song?
+    private(set) var songQueue: [Song] = []
+    public private(set) var queueSource: MusicContext = .all
+    public private(set) var playbackError: String?
+    public var importReport: String?
+    public private(set) var isImporting = false
+    public private(set) var importProgress: Double = 0
 
-    private(set) var songQueue: [Song] = [] // read-only outside; UI observes this for the queue drawer
-
-    // The same songs as songQueue, in the order the caller handed them to us, never
-    // shuffled. songQueue is what the drawer renders, so it has to hold the shuffled
-    // order — which left nothing anywhere remembering what the order had been before.
-    // Unshuffling used to filter the shuffled array and get the shuffled array back.
-    //
-    // "The order the caller handed them to us" is as much as we can promise: the views
-    // pass an unsorted @Query, so this is SwiftData's own row order rather than anything
-    // the user chose. It is stable enough for shuffle to round-trip within a session,
-    // which is all this is for — it is not a sort, and shouldn't be mistaken for one.
     @ObservationIgnored private var orderedQueue: [Song] = []
-
-    // None of the below is view state — it is the player, its clock, and the
-    // bookkeeping the two need — so it stays out of observation. The macro would
-    // otherwise track every one of them, and currentIndex and
-    // ticksSinceNowPlayingSync in particular are written on the same twice-a-second
-    // path as currentTime, which is precisely the traffic this task exists to stop.
-    @ObservationIgnored private var audioPlayer: AVAudioPlayer? = nil
-    @ObservationIgnored private var currentIndex: Int = 0 // index of the current song in the queue
-    @ObservationIgnored private var playbackTimer: Timer? = nil
-    @ObservationIgnored private var ticksSinceNowPlayingSync = 0 // see startPlaybackTimer
-    @ObservationIgnored private var wasPlayingBeforeInterruption = false // see handleInterruption
-    @ObservationIgnored private var hasActivatedSession = false // see activateSession / deactivateSession
-
-    // 0.5s per playback tick, so the lock screen's elapsed time is reconciled every 5 seconds
-    private static let nowPlayingSyncTicks = 10
+    @ObservationIgnored private var audioPlayer: AVAudioPlayer?
+    @ObservationIgnored private var loadedSongName: String?
+    @ObservationIgnored private var loadedSource: Bool?
+    @ObservationIgnored private var currentIndex: Int?
+    @ObservationIgnored private var playbackTimer: Timer?
+    @ObservationIgnored private var ticksSinceNowPlayingSync = 0
+    @ObservationIgnored private var transitionTask: Task<Void, Never>?
+    @ObservationIgnored private var fadingOutPlayerID: ObjectIdentifier?
+    @ObservationIgnored private var generation: UInt = 0
+    @ObservationIgnored private var wasPlayingBeforeInterruption = false
+    @ObservationIgnored private var hasActivatedSession = false
+    @ObservationIgnored private var importTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingImports = 0
+    @ObservationIgnored private let playerFactory: ((Song) throws -> AVAudioPlayer)?
+    @ObservationIgnored private let musicDirectory: URL
+    @ObservationIgnored private let managesSystemAudio: Bool
+    @ObservationIgnored private let saveChanges: (ModelContext) throws -> Void
 
     static let shared = AudioPlayerManager()
 
-    private override init() {
+    // The factory accepts real AVAudioPlayers so tests can use generated audio,
+    // including players that reject prepare/play, without registering system controls.
+    init(playerFactory: ((Song) throws -> AVAudioPlayer)? = nil,
+         musicDirectory: URL = AudioPlayerManager.importedMusicDirectory,
+         managesSystemAudio: Bool = true,
+         saveChanges: @escaping (ModelContext) throws -> Void = { try $0.save() }) {
+        self.playerFactory = playerFactory
+        self.musicDirectory = musicDirectory
+        self.managesSystemAudio = managesSystemAudio
+        self.saveChanges = saveChanges
         super.init()
-        configureAudioSession()
-        observeAudioSessionEvents()
-        setupRemoteCommands()
+        if managesSystemAudio {
+            configureAudioSession()
+            observeAudioSessionEvents()
+            setupRemoteCommands()
+        }
     }
 
-    // Configure the shared audio session for background playback.
-    // Requires the "audio" UIBackgroundMode (declared in Info.plist).
-    //
-    // Category only, deliberately. Activating the session is the act that silences
-    // whatever else the device is playing, and this runs from the singleton's init —
-    // which the first view to so much as read AudioPlayerManager.shared triggers, long
-    // before the user has asked for a note of music. So simply opening LittleRoute used
-    // to cut off someone's podcast. Declaring the category takes nothing from anyone; it
-    // only tells iOS what kind of app we are. The session itself is taken in
-    // activateSession, on the way into actual playback.
+    var progress: Double {
+        guard songLength > 0 else { return 0 }
+        return min(1, max(0, currentTime / songLength))
+    }
+
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         } catch {
-            // All three AVAudioSession failures in this file are .error, including
-            // the deactivation one below that costs us nothing directly: each of
-            // them is the session refusing a request, and each has a consequence
-            // the user hears — no category means playback may never be allowed,
-            // no activation means silence, and no deactivation means whatever we
-            // interrupted never comes back.
-            Log.playback.error("Failed to configure audio session: \(String(describing: error), privacy: .public)")
+            playbackError = "Audio setup failed. Try playing again: \(error.localizedDescription)"
+            Log.playback.error("Audio setup failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    // Take the audio session, immediately before we make a sound. Every path into
-    // playback goes through here.
-    //
-    // Called ahead of every play(), including the repeated ones, rather than only the
-    // first: activating an already-active session is a no-op, and that is far safer than
-    // keeping a Bool that claims we are active and being wrong. iOS deactivates us
-    // without asking — for interruptions, and for a media services reset — and a stale
-    // "already active" in that direction would mean silently never taking the session
-    // back, i.e. a player that looks like it is playing and makes no sound.
-    //
-    // Returns whether we got it, so callers can leave isPaused honest if we didn't.
     private func activateSession() -> Bool {
+        guard managesSystemAudio else { return true }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             hasActivatedSession = true
             return true
         } catch {
-            Log.playback.error("Failed to activate audio session: \(String(describing: error), privacy: .public)")
+            playbackError = "Cannot start audio. Try again: \(error.localizedDescription)"
             return false
         }
     }
 
-    // Hand the session back, and tell whatever we interrupted that it can pick up again.
-    //
-    // Called from exactly one place — the empty-queue teardown in reloadQueue, where
-    // there is genuinely nothing left to play. Everywhere else that playback stops, we
-    // keep it:
-    //
-    //   - Not on pause. A paused music app is still the app that owns the session; that
-    //     is what keeps the lock-screen play button live. Giving the session up for a
-    //     two-second pause invites another app to take it, and we may not get it back.
-    //   - Not on an interruption. iOS has already deactivated us by the time .began
-    //     arrives, and telling other apps to resume mid-call is the exact opposite of
-    //     what the .shouldResume path below is trying to do.
-    //   - Not on backgrounding. Surviving the screen locking is the entire point of the
-    //     audio background mode.
-    //
-    // The flag only ever gates deactivation, never activation — being wrong here costs a
-    // redundant call, whereas being wrong the other way costs silence.
     private func deactivateSession() {
         guard hasActivatedSession else { return }
-        hasActivatedSession = false
-
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            hasActivatedSession = false
         } catch {
-            Log.playback.error("Failed to deactivate audio session: \(String(describing: error), privacy: .public)")
+            playbackError = "Could not release the audio session: \(error.localizedDescription)"
         }
     }
 
-    // MARK: Audio Session Interruptions & Route Changes
-    // Phone calls, Siri, and other apps grabbing the session all arrive as interruption
-    // notifications; unplugging headphones arrives as a route change. In both cases iOS
-    // has already silenced us, so with nobody listening isPaused keeps insisting we're
-    // playing and the UI shows a pause button for silence.
-    //
-    // We deliberately never remove these observers. This class is a singleton reached
-    // through .shared, so it lives as long as the process and deinit is unreachable —
-    // "removing" them would only mean going deaf to interruptions for the rest of the
-    // app's life. (NotificationCenter has held zeroing weak references to selector-based
-    // observers since iOS 9, so there is nothing to dangle either way.)
     private func observeAudioSessionEvents() {
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-
-        center.addObserver(self,
-                           selector: #selector(handleInterruption(_:)),
-                           name: AVAudioSession.interruptionNotification,
-                           object: session)
-        center.addObserver(self,
-                           selector: #selector(handleRouteChange(_:)),
-                           name: AVAudioSession.routeChangeNotification,
-                           object: session)
+        center.addObserver(self, selector: #selector(handleInterruption(_:)),
+                           name: AVAudioSession.interruptionNotification, object: session)
+        center.addObserver(self, selector: #selector(handleRouteChange(_:)),
+                           name: AVAudioSession.routeChangeNotification, object: session)
     }
 
-    @objc private func handleInterruption(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let rawType = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
-
-        // Unpack everything we need up front so only plain values cross onto the main
-        // queue below, rather than the notification's untyped userInfo dictionary.
-        let shouldResume: Bool
-        if let rawOptions = info[AVAudioSessionInterruptionOptionKey] as? UInt {
-            shouldResume = AVAudioSession.InterruptionOptions(rawValue: rawOptions).contains(.shouldResume)
-        } else {
-            shouldResume = false
-        }
-
-        // These land on whatever thread the audio session feels like using, and
-        // everything below touches observable state and a run-loop Timer.
+    @objc nonisolated private func handleInterruption(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let shouldResume = AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-
+            guard let self else { return }
             switch type {
             case .began:
-                // Ask our own state, not the player's: by the time .began is delivered
-                // iOS may already have paused it, and isPlaying would then be false —
-                // which would make us decide we were never playing and never resume.
-                // isPaused reflects what the user actually asked for.
-                self.wasPlayingBeforeInterruption = !self.isPaused && self.audioPlayer != nil
-                self.pauseForSystemEvent(reason: "interrupted")
-
+                let wasPlaying = !self.isPaused && self.audioPlayer != nil
+                self.cancelTransition()
+                self.wasPlayingBeforeInterruption = wasPlaying
+                self.pauseLoadedSong()
             case .ended:
-                // Only pick up where we left off if we were genuinely playing when we
-                // got cut off, otherwise a call would start music the user had paused.
                 guard self.wasPlayingBeforeInterruption else { return }
                 self.wasPlayingBeforeInterruption = false
-
                 guard shouldResume else { return }
-                self.resumeAfterInterruption()
-
+                self.settleQueue(keepCurrentSong: true, autoplay: true)
             @unknown default:
                 break
             }
         }
     }
 
-    @objc private func handleRouteChange(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
-
-        // .oldDeviceUnavailable is headphones being yanked or a Bluetooth device walking
-        // away. iOS falls back to the built-in speaker, and it's the one route change
-        // where carrying on playing would be actively rude. Every other reason — a new
-        // device appearing, a category change — we let play through untouched.
-        guard reason == .oldDeviceUnavailable else { return }
-
+    @objc nonisolated private func handleRouteChange(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.pauseForSystemEvent(reason: "audio route went away")
+            self?.cancelTransition()
+            self?.pauseLoadedSong()
         }
     }
 
-    // Shared by both paths above: by the time either fires the system has already
-    // silenced us, so the job here is purely to stop lying about it.
-    private func pauseForSystemEvent(reason: String) {
-        // There may be no player at all — reloadQueue tears it down when a context
-        // leaves nothing to play, so the song on screen a moment ago can be gone.
-        // Nothing to pause in that case, but isPaused still has to say so.
-        audioPlayer?.pause()
-        isPaused = true
-        stopPlaybackTimer()
-        updateNowPlayingInfo()
-        // .info: nothing has gone wrong — a call arrived, or the headphones came
-        // out, and we did the right thing. But it is the explanation for a
-        // silence the user noticed, so it should still be there tomorrow when
-        // they ask about it. The reason is one of two literals from this file's
-        // own call sites, so marking it .public discloses nothing and is the
-        // difference between this line saying something and saying nothing.
-        Log.playback.info("Playback paused: \(reason, privacy: .public)")
-    }
-
-    private func resumeAfterInterruption() {
-        guard let player = audioPlayer else {
-            // The queue was rebuilt out from under us while the call was going on and
-            // there's nothing loaded any more. Stay paused rather than pretend.
-            isPaused = true
-            updateNowPlayingInfo()
-            // .notice rather than .error: staying paused is the correct answer to
-            // a queue that emptied during the call, not a fault. It is still the
-            // record of music that a user expected back and did not get, which
-            // is why it outranks the .info on the happy path below.
-            Log.playback.notice("Interruption ended, but there is no loaded song to resume")
-            return
-        }
-
-        // Our session was deactivated for the duration of the interruption, so it has
-        // to be reactivated before the player will make any sound again. Same door as
-        // every other entry into playback — this is not a special case, it just happens
-        // to be the one where we know for certain the session is gone.
-        guard activateSession() else {
-            // .error, unlike its neighbour above: here we asked for the session
-            // and were refused, so the music stops for a reason outside the
-            // app's own bookkeeping. activateSession has already logged the
-            // underlying failure; this line says what it cost.
-            Log.playback.error("Interruption ended, but the audio session would not come back")
-            isPaused = true
-            updateNowPlayingInfo()
-            return
-        }
-
-        player.play()
-        isPaused = false
-        startPlaybackTimer()
-        updateNowPlayingInfo()
-        Log.playback.info("Interruption ended, resuming playback")
-    }
-
-    // Lock screen / Control Center playback controls.
-    //
-    // MediaPlayer runs these blocks on a thread of its own choosing, and everything they
-    // reach — musicPlayPause, skip, previous — rewrites observable state, so each one
-    // hops onto main before it touches anything, the same way the interruption handlers
-    // above do.
-    //
-    // The reads hop too, not just the writes: play and pause decide what to do by asking
-    // isPaused, and asking from another thread races with the main-thread write just as
-    // badly as writing would. The price of moving that check onto main is that we have to
-    // answer the system before we know the answer, so these can no longer report
-    // .commandFailed for "we were already playing". Reporting .success and quietly doing
-    // nothing is the better lie of the two — a redundant play command isn't a failure.
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
-
         center.playCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
             DispatchQueue.main.async {
-                guard self.isPaused else { return }
+                guard let self, self.isPaused else { return }
                 self.musicPlayPause()
             }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .commandFailed }
             DispatchQueue.main.async {
-                guard !self.isPaused else { return }
-                self.musicPlayPause()
+                guard let self else { return }
+                self.cancelTransition()
+                self.pauseLoadedSong()
             }
             return .success
         }
@@ -387,695 +167,649 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             DispatchQueue.main.async { self?.previous() }
             return .success
         }
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent,
+                  event.positionTime.isFinite else { return .commandFailed }
+            let position = event.positionTime
+            DispatchQueue.main.async { self?.seek(to: position) }
+            return .success
+        }
     }
 
-    // Publish current song metadata to the lock screen / Control Center
     private func updateNowPlayingInfo() {
-        var info: [String: Any] = [:]
-        info[MPMediaItemPropertyTitle] = currentSong?.title ?? "LittleRoute"
-        info[MPMediaItemPropertyArtist] = currentSong?.artist ?? "Unknown Artist"
-        info[MPMediaItemPropertyPlaybackDuration] = songLength
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = audioPlayer?.currentTime ?? 0.0
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPaused ? 0.0 : 1.0
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-    }
-    
-    // Computed property for progress (0.0 to 1.0)
-    var progress: Double {
-        guard songLength > 0 else { return 0.0 }
-        return currentTime / songLength
-    }
-    
-    // Load songs from the Music folder in the app bundle
-    public func loadSongsFromBundle(modelContext: ModelContext) -> [Song] {
-        guard let musicPath = Bundle.main.resourcePath?.appending("/Music") else {
-            // Log.library rather than Log.playback, and everything from here to
-            // the end of importSongs goes with it. These lines fail against the
-            // filesystem and SwiftData at import time; the transport lines fail
-            // against AVAudioSession in real time. See Logging.swift.
-            //
-            // .error because there is no legitimate way to reach this: the Music
-            // folder is a bundle resource, so its absence is a packaging fault
-            // that shipped, not a state the user can get into.
-            Log.library.error("Music folder not found")
-            return []
-        }
-        
-        var loadedSongs: [Song] = []
-        
-        do {
-            let fileManager = FileManager.default
-            let files = try fileManager.contentsOfDirectory(atPath: musicPath)
-            let mp3Files = files.filter { $0.hasSuffix(".mp3") }
-
-            // One fetch for the whole folder, in place of the FetchDescriptor this used
-            // to run per file. Whole Songs and not just their names, deliberately: the
-            // existing ones go straight back to the caller, which reads every field off
-            // them to build the queue — so narrowing this fetch would only move the round
-            // trips from here to the first property access.
-            var songsByName = existingSongsByName(in: modelContext)
-
-            for fileName in mp3Files {
-                let songName = fileName.replacingOccurrences(of: ".mp3", with: "")
-                let title = songName // Use filename as title
-
-                // Check if song already exists
-                if let existing = songsByName[songName] {
-                    // Deliberately not forcing isImported = false on it. A user
-                    // can have imported an mp3 whose basename matches a bundled
-                    // one, and clearing the flag here would drop their copy out
-                    // of the library screen every launch. A record that says
-                    // "imported" is a claim only the import path makes; this one
-                    // has no business retracting it.
-                    loadedSongs.append(existing)
-                } else {
-                    // isImported: false — this file ships inside the app bundle,
-                    // so there is nothing in Documents/Music for the user to
-                    // manage or delete. It plays; it doesn't appear in My Music.
-                    // MusicContext.all.storageKey, not the literal "All" this
-                    // used to be: locations holds storage keys now, and a
-                    // hand-typed one is a tag that matches nothing.
-                    let newSong = Song(title: title, songName: songName, artist: "Unknown Artist", locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 10000000, isImported: false)
-                    modelContext.insert(newSong)
-
-                    // Fold the new song into the index before moving on. Two files in the
-                    // folder can still reduce to a single songName, and the per-file fetch
-                    // caught that for free — a SwiftData fetch sees pending inserts, so the
-                    // second file found the first one's unsaved row. A single fetch up front
-                    // sees nothing that happens after it, so we keep it current by hand.
-                    // Keyed on the model's own songName rather than the local variable,
-                    // since Song.init normalizes what it is handed and an index that
-                    // disagrees with the store is worse than no index at all.
-                    songsByName[newSong.songName] = newSong
-                    loadedSongs.append(newSong)
-                }
-            }
-            
-            try? modelContext.save()
-            Log.library.info("Loaded \(mp3Files.count) songs from Music folder")
-        } catch {
-            Log.library.error("Error loading songs: \(String(describing: error), privacy: .public)")
-        }
-        
-        return loadedSongs
-    }
-    
-    // MARK: Song File Locations
-    // Directory where user-imported mp3s are stored (Documents/Music)
-    static var importedMusicDirectory: URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Music", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
-        return dir
-    }
-
-    // Resolve a song file by name: bundled Music folder first, then imported files
-    static func url(forSongFile songName: String) -> URL? {
-        if let path = Bundle.main.path(forResource: songName, ofType: "mp3", inDirectory: "Music") {
-            return URL(fileURLWithPath: path)
-        }
-        let imported = importedMusicDirectory.appendingPathComponent("\(songName).mp3")
-        return FileManager.default.fileExists(atPath: imported.path) ? imported : nil
-    }
-
-    // Import user-selected mp3 files: copy into Documents/Music, read ID3
-    // title/artist when available, and insert new Song records.
-    @MainActor
-    public func importSongs(from urls: [URL], modelContext: ModelContext) async {
-        // One fetch for the whole batch, in place of the two per file this used to run.
-        // It has to stay current as we insert, because a name added here has to be
-        // visible to the rest of the loop: two of the selected URLs can easily share a
-        // basename — the same track picked out of two folders — and the per-file fetch
-        // caught that for free, since a SwiftData fetch sees pending inserts. A snapshot
-        // taken once does not, so we maintain it ourselves.
-        //
-        // It can go stale in one narrow way the per-file fetch couldn't: this suspends at
-        // every await below, and other main-actor code could in principle insert a Song in
-        // the gap. Nothing in the app does today — the importer is a single sheet, and the
-        // bundle load only runs against an empty library — and the price of being wrong is
-        // one duplicate row, against N round trips saved on every import.
-        //
-        // Whole Songs rather than the bare Set of names this used to take: the duplicate
-        // branch below now writes isImported to the existing record, so the objects are
-        // needed and not just their names. Narrowing the fetch would only have moved the
-        // round trip to the first property access.
-        var songsByName = existingSongsByName(in: modelContext)
-
-        for url in urls {
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-
-            let songName = url.deletingPathExtension().lastPathComponent
-            let destination = Self.importedMusicDirectory.appendingPathComponent("\(songName).mp3")
-            let existing = songsByName[songName]
-
-            // Copy the file in (even if a Song record already exists from a
-            // previous failed attempt, the file may be missing)
-            if !FileManager.default.fileExists(atPath: destination.path) || existing == nil {
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        try Self.coordinatedCopy(from: url, to: destination)
-                    }.value
-                } catch {
-                    // Song identity is .public here and at every other import
-                    // site. The user picked these files a second ago and is
-                    // about to ask why one of them didn't arrive; "Failed to
-                    // copy imported song '<private>'" cannot answer that. The
-                    // policy and what it discloses are set out in Logging.swift.
-                    Log.library.error("Failed to copy imported song '\(songName, privacy: .public)': \(String(describing: error), privacy: .public)")
-                    continue
-                }
-            }
-
-            // Skip the record insert for duplicates
-            if let existing {
-                // ...but not the flag. We are past the copy, so the mp3 is in
-                // Documents/Music whether we just put it there or found it, and
-                // the record has to agree or the song the user has plainly just
-                // imported never shows up in My Music. Reachable two ways: the
-                // name collides with a bundled song, or the row predates the flag
-                // and the migration's backfill found no file to match it against.
-                // Guarded rather than assigned, so an ordinary re-import doesn't
-                // dirty a row that already says the right thing.
-                // Both arms are .info, deliberately the same level even though
-                // the second one is the more interesting of the two — it repairs
-                // a row that was wrong. Splitting them would mean a filter that
-                // shows one arm hides the other, and the only reason to read
-                // either line is to find out which arm a particular import took.
-                // A branch you are trying to understand has to be visible whole.
-                if existing.isImported {
-                    Log.library.info("Song already exists, skipping record: \(songName, privacy: .public)")
-                } else {
-                    existing.isImported = true
-                    Log.library.info("Song already exists, marking the existing record imported: \(songName, privacy: .public)")
-                }
-                continue
-            }
-
-            // Pull title/artist from ID3 tags, falling back to the filename
-            var title = songName
-            var artist = "Unknown Artist"
-            let asset = AVURLAsset(url: destination)
-            if let metadata = try? await asset.load(.commonMetadata) {
-                if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle).first,
-                   let value = try? await item.load(.stringValue) {
-                    title = value
-                }
-                if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtist).first,
-                   let value = try? await item.load(.stringValue) {
-                    artist = value
-                }
-            }
-
-            // isImported: true — we have just copied this file into
-            // Documents/Music ourselves. This is the one place that claim is made.
-            let newSong = Song(title: title, songName: songName, artist: artist, locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 10000000, isImported: true)
-            modelContext.insert(newSong)
-            // and the rest of the batch now knows about it — see the note above the fetch.
-            // The model's own songName, not the local one, so the index says what the store
-            // will say: Song.init normalizes the name it is given, and a URL like
-            // "track.mp3.mp3" leaves the two disagreeing.
-            songsByName[newSong.songName] = newSong
-            Log.library.info("Imported song: \(title, privacy: .public)")
-        }
-
-        do {
-            try modelContext.save()
-        } catch {
-            // The save is what makes every insert above real, so this one line
-            // failing silently loses the entire batch the user just picked.
-            Log.library.error("Failed to save imported songs: \(String(describing: error), privacy: .public)")
-        }
-
-        // Refresh the queue so new songs are playable immediately
-        let allSongs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
-        reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: allSongs)
-    }
-
-    // Every song in the store, indexed by songName. This replaces a songExists(_:in:) that
-    // ran a predicated fetch per question — importing forty songs asked eighty times, and
-    // loading the bundle once per file, when the answer to all of them fits in one round
-    // trip.
-    //
-    // It had a narrower sibling, existingSongNames, which used propertiesToFetch to pull
-    // one String per song for importSongs to test membership against. That went when
-    // importSongs started writing isImported to the rows it finds: everything a narrowed
-    // fetch leaves out comes back as a fault, so touching a second property sends SwiftData
-    // straight back to the store — the exact round trip the narrowing was there to avoid.
-    // Narrowing a fetch whose results get used is a false economy, and both callers use
-    // them now.
-    //
-    // First one wins on a collision, which is the .first the per-name fetch used to take.
-    // As of LR-16 that branch should be unreachable: songName carries a unique constraint,
-    // and the V4 → V5 stage collapsed the duplicate rows that predate it. The closure stays
-    // anyway. Dropping it means Dictionary(uniqueKeysWithValues:), which does not tolerate
-    // a duplicate key — it traps — so removing it would trade an arbitrary-but-harmless
-    // pick for a crash, on the strength of a guarantee no one here has been able to run
-    // even once.
-    private func existingSongsByName(in modelContext: ModelContext) -> [String: Song] {
-        let songs = (try? modelContext.fetch(FetchDescriptor<Song>())) ?? []
-        return Dictionary(songs.map { ($0.songName, $0) }, uniquingKeysWith: { existing, _ in existing })
-    }
-
-    // File-coordinated copy. The .forUploading option materializes files that
-    // aren't locally available yet (e.g. iCloud Drive items) before copying.
-    private static func coordinatedCopy(from source: URL, to destination: URL) throws {
-        var coordinatorError: NSError?
-        var copyError: Error?
-
-        NSFileCoordinator().coordinate(readingItemAt: source, options: .forUploading, error: &coordinatorError) { readURL in
-            do {
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.copyItem(at: readURL, to: destination)
-            } catch {
-                copyError = error
-            }
-        }
-
-        if let error = coordinatorError { throw error }
-        if let error = copyError { throw error }
-    }
-
-    // MARK: Audio Playback Functions
-    // Start playing on launch, but only if the user isn't already listening to
-    // something else.
-    //
-    // Opening LittleRoute used to stop whatever was playing — a podcast, another
-    // music app — because .onAppear called musicPlayPause() unconditionally, and
-    // taking the session is what silences the other app. Making activation lazy
-    // (see activateSession) didn't help on its own, since we asked for playback a
-    // frame after launch anyway.
-    //
-    // isOtherAudioPlaying answers "is someone else making noise right now", which
-    // is exactly the question. If they are, we stay quiet and wait to be asked.
-    public func startPlaybackIfNothingElseIsPlaying() {
-        guard !songQueue.isEmpty else { return }
-
-        guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else {
-            // .info: the deliberate, polite outcome, and the answer to "I opened
-            // the app and it didn't play" — which looks exactly like a bug from
-            // the outside and is the opposite of one.
-            Log.playback.info("Something else is playing — starting paused rather than interrupting it")
+        guard managesSystemAudio else { return }
+        guard let currentSong, let audioPlayer else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: currentSong.title,
+            MPMediaItemPropertyArtist: currentSong.artist ?? "Unknown Artist",
+            MPMediaItemPropertyPlaybackDuration: songLength,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: audioPlayer.currentTime,
+            MPNowPlayingInfoPropertyPlaybackRate: isPaused ? 0.0 : 1.0
+        ]
+    }
 
-        guard isPaused || audioPlayer == nil else { return } // already going, nothing to do
+    private func cancelTransition() {
+        generation &+= 1
+        transitionTask?.cancel()
+        transitionTask = nil
+        fadingOutPlayerID = nil
+        audioPlayer?.setVolume(1, fadeDuration: 0)
+        wasPlayingBeforeInterruption = false
+    }
+
+    private func resolveQueue(context: MusicContext, shuffle: Bool, songs: [Song]) {
+        currentContext = context
+        isShuffled = shuffle
+        let exact = songs.filter { $0.isTagged(context) }
+        queueSource = exact.isEmpty ? .all : context
+        orderedQueue = exact.isEmpty ? songs.filter { $0.isTagged(.all) } : exact
+        songQueue = shuffle ? orderedQueue.shuffled() : orderedQueue
+        currentIndex = matchingCurrentIndex()
+    }
+
+    private func matchingCurrentIndex() -> Int? {
+        guard let loadedSongName, audioPlayer != nil else { return nil }
+        return songQueue.firstIndex {
+            $0.songName == loadedSongName && $0.isImported == loadedSource
+        }
+    }
+
+    public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song],
+                            keepCurrentSong: Bool = true) {
+        let wasPlaying = !isPaused
+        cancelTransition()
+        resolveQueue(context: newContext, shuffle: shuffle, songs: songs)
+        settleQueue(keepCurrentSong: keepCurrentSong, autoplay: wasPlaying)
+    }
+
+    private func settleQueue(keepCurrentSong: Bool, autoplay: Bool) {
+        guard !songQueue.isEmpty else {
+            clearPlayer()
+            playbackError = nil
+            deactivateSession()
+            return
+        }
+        if keepCurrentSong, let index = matchingCurrentIndex() {
+            currentIndex = index
+            currentSong = songQueue[index]
+            if autoplay && isPaused { playLoadedSong() }
+            updateNowPlayingInfo()
+            return
+        }
+        if loadSong(at: 0), autoplay { playLoadedSong() }
+    }
+
+    // One fade-out/fade-in, never two audible players. No delayed closure owns a
+    // library snapshot: every reload invalidates this generation and resolves afresh.
+    public func switchContext(to newContext: MusicContext, songs: [Song],
+                              fadeDuration: TimeInterval = 1.5) {
+        let wasPlaying = !isPaused
+        cancelTransition()
+        resolveQueue(context: newContext, shuffle: isShuffled, songs: songs)
+        if matchingCurrentIndex() != nil {
+            settleQueue(keepCurrentSong: true, autoplay: wasPlaying)
+            return
+        }
+        guard wasPlaying, let player = audioPlayer, !songQueue.isEmpty else {
+            settleQueue(keepCurrentSong: true, autoplay: wasPlaying)
+            return
+        }
+        let duration = fadeDuration.isFinite ? min(30, max(0, fadeDuration)) : 0
+        let token = generation
+        let playerID = ObjectIdentifier(player)
+        fadingOutPlayerID = playerID
+        player.setVolume(0, fadeDuration: duration)
+        transitionTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(duration)) } catch { return }
+            guard let self, !Task.isCancelled, self.generation == token,
+                  let oldPlayer = self.audioPlayer, ObjectIdentifier(oldPlayer) == playerID,
+                  !self.isPaused else { return }
+            self.fadingOutPlayerID = nil
+            guard self.loadSong(at: 0) else {
+                self.transitionTask = nil
+                return
+            }
+            self.audioPlayer?.volume = 0
+            guard self.playLoadedSong(), let nextPlayer = self.audioPlayer else {
+                self.audioPlayer?.volume = 1
+                self.transitionTask = nil
+                return
+            }
+            let nextID = ObjectIdentifier(nextPlayer)
+            nextPlayer.setVolume(1, fadeDuration: duration)
+            do { try await Task.sleep(for: .seconds(duration)) } catch { return }
+            guard !Task.isCancelled, self.generation == token,
+                  let current = self.audioPlayer, ObjectIdentifier(current) == nextID else { return }
+            current.volume = 1
+            self.transitionTask = nil
+        }
+    }
+
+    public func startPlaybackIfNothingElseIsPlaying() {
+        guard !songQueue.isEmpty, isPaused else { return }
+        guard !managesSystemAudio || !AVAudioSession.sharedInstance().isOtherAudioPlaying else { return }
         musicPlayPause()
     }
 
-    // Play the music if not paused, pause the music if paused. ezpz
     public func musicPlayPause() {
-        // If no audio is loaded and we have songs in queue, load the first one
-        if audioPlayer == nil && !songQueue.isEmpty {
-            currentSong = songQueue[currentIndex]
-            loadAudio(fileName: songQueue[currentIndex].songName)
-        }
-        
-        if audioPlayer != nil && audioPlayer!.isPlaying {
-            audioPlayer!.pause()
-            isPaused = true
-            stopPlaybackTimer()
-        }
-        else if audioPlayer != nil && !audioPlayer!.isPlaying {
-            // this is usually the first time anyone has asked for sound, so it's where
-            // the session actually gets taken — see activateSession
-            if activateSession() {
-                audioPlayer!.play()
-                isPaused = false
-                startPlaybackTimer()
-            } else {
-                // no session, no sound. Say so rather than showing a pause button
-                // over silence.
-                isPaused = true
-                stopPlaybackTimer()
+        cancelTransition()
+        if !isPaused {
+            pauseLoadedSong()
+        } else {
+            if matchingCurrentIndex() == nil {
+                guard !songQueue.isEmpty, loadSong(at: currentIndex ?? 0) else { return }
             }
+            playLoadedSong()
         }
-        
-        updateNowPlayingInfo()
-        // .debug, and it is the clearest case of it in the file: one line per tap
-        // of the play button, saying something the UI is already showing. It
-        // earns its keep only when someone has turned the category up to watch a
-        // sequence of transport calls go past. The ternary produces a String, so
-        // it needs .public or the line degrades to "Audio Player is now
-        // <private>", which is the worst of both worlds — the noise without the
-        // content.
-        Log.playback.debug("Audio Player is now \(self.isPaused ? "paused" : "playing", privacy: .public)")
     }
-    
-    // Start whatever loadAudio just prepared. skip / previous / play(song:) all do the
-    // same thing once the file is loaded, and all three need the session in hand before
-    // the player will be audible, so the sequence lives here instead of in each of them.
-    private func playLoadedSong() {
-        guard activateSession() else {
-            isPaused = true
-            stopPlaybackTimer()
-            updateNowPlayingInfo()
-            return
-        }
 
-        audioPlayer?.play()
+    private func pauseLoadedSong() {
+        audioPlayer?.pause()
+        currentTime = audioPlayer?.currentTime ?? 0
+        isPaused = true
+        stopPlaybackTimer()
+        updateNowPlayingInfo()
+    }
+
+    @discardableResult
+    private func playLoadedSong() -> Bool {
+        guard let player = audioPlayer else { return false }
+        guard activateSession() else {
+            pauseLoadedSong()
+            return false
+        }
+        guard player.play() else {
+            playbackError = "Cannot play “\(currentSong?.title ?? "this song")”. Try again or reimport the file."
+            pauseLoadedSong()
+            return false
+        }
+        playbackError = nil
         isPaused = false
         startPlaybackTimer()
         updateNowPlayingInfo()
+        return true
     }
 
     public func skip() {
-        guard !songQueue.isEmpty else {
-            // .debug here and in previous(). An empty queue is already announced
-            // at .notice by reloadQueue, which is where it actually became empty;
-            // these two only record that somebody pressed a button afterwards.
-            Log.playback.debug("No songs in queue")
-            return
-        }
-        
-        // Set the current index to the next song in the queue
-        // if on the last song, loop back to the start of the queue
-        currentIndex = (currentIndex + 1) % songQueue.count
-        currentSong = songQueue[currentIndex]
-        let nextSong = songQueue[currentIndex].songName
-        
-        loadAudio(fileName: nextSong)
-        playLoadedSong()
-    }
-    
-    // Jump to a specific song already in the queue and play it
-    //
-    // Matched on songName, here and in followCurrentSongInQueue and reloadQueue, and
-    // deliberately left that way by LR-16 rather than moved to persistentModelID. The
-    // constraint added in that task is what makes this a real identity test instead of a
-    // guess: two rows can no longer share a name, so "the song with this name" names
-    // exactly one song. Model ID would say the same thing about every row the store has
-    // ever handed us, and would additionally say it about rows that were never inserted
-    // into a ModelContext at all — which is what every fixture in PlaybackTests is, by
-    // design. Swapping the comparison would rest roughly forty tests on the behaviour of
-    // persistentModelID on an unregistered model, to replace a comparison that has just
-    // been made correct.
-    public func play(song: Song) {
-        guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else {
-            // .notice, which is a genuine judgement call. It is not an error —
-            // the queue can legitimately have been rebuilt between the row being
-            // drawn and the row being tapped — but the user pressed a specific
-            // song and got nothing, and unlike the guards in skip() and
-            // previous() this one names which song it was. That name is what
-            // makes the line worth keeping, hence .public.
-            Log.playback.notice("Song not in queue: \(song.songName, privacy: .public)")
-            return
-        }
-
-        currentIndex = index
-        currentSong = songQueue[currentIndex]
-        loadAudio(fileName: songQueue[currentIndex].songName)
-        playLoadedSong()
+        cancelTransition()
+        guard !songQueue.isEmpty else { return }
+        let next = currentIndex.map { ($0 + 1) % songQueue.count } ?? 0
+        if loadSong(at: next) { playLoadedSong() }
     }
 
     public func previous() {
-        guard !songQueue.isEmpty else {
-            Log.playback.debug("No songs in queue")
-            return
-        }
-        
-        // Same as the skip function but in reverse
-        currentIndex = (currentIndex - 1 + songQueue.count) % songQueue.count
-        currentSong = songQueue[currentIndex]
-        let previousSong = songQueue[currentIndex].songName
-        
-        loadAudio(fileName: previousSong)
-        playLoadedSong()
+        cancelTransition()
+        guard !songQueue.isEmpty else { return }
+        let previous = currentIndex.map { ($0 - 1 + songQueue.count) % songQueue.count } ?? 0
+        if loadSong(at: previous) { playLoadedSong() }
     }
 
-    // Toggle shuffle mode
-    // Technically we can just call reloadQueue instead of this but it'll save an unnecessary full list reset
-    // and slightly reduce lag if the user reshuffles
+    public func play(song: Song) {
+        cancelTransition()
+        guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else { return }
+        if loadSong(at: index) { playLoadedSong() }
+    }
+
     public func toggleShuffle() {
+        let wasPlaying = !isPaused
+        cancelTransition()
         isShuffled.toggle()
-
-        if(isShuffled) {
-            songQueue.shuffle()
-        } else {
-            // Restore the order the songs arrived in. This used to hand the already
-            // shuffled songQueue back to reloadQueue, which filtered it and got the
-            // same shuffled array back out — so turning shuffle off reordered nothing.
-            songQueue = orderedQueue
-        }
-
-        // Either way the playing song has just moved to a different slot while
-        // currentIndex stayed pointing at the old one, which would send the next skip
-        // somewhere arbitrary. This was already true of switching shuffle *on*.
-        followCurrentSongInQueue()
+        songQueue = isShuffled ? orderedQueue.shuffled() : orderedQueue
+        currentIndex = matchingCurrentIndex()
+        settleQueue(keepCurrentSong: true, autoplay: wasPlaying)
     }
 
-    // Point currentIndex back at whatever is playing after the queue has been reordered
-    // underneath it.
-    //
-    // Deliberately leaves audioPlayer alone: the song hasn't changed, only its position
-    // in the list has, so building a fresh player would restart it from zero — which is
-    // the whole complaint this exists to fix.
-    private func followCurrentSongInQueue() {
-        guard let playing = currentSong,
-              let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) else {
-            // Nothing loaded, or it's no longer in the queue. The top is as good a place
-            // as any to point at, and musicPlayPause will load from there when asked.
-            currentIndex = 0
-            return
-        }
-
-        currentIndex = index
+    public func seek(to time: TimeInterval) {
+        guard time.isFinite, let player = audioPlayer else { return }
+        cancelTransition()
+        player.currentTime = min(songLength, max(0, time))
+        currentTime = player.currentTime
+        updateNowPlayingInfo()
     }
 
-    // Prepare the audio player with the selected song
-    private func loadAudio(fileName: String) {
-        
-        guard let url = Self.url(forSongFile: fileName) else {
-            // .error, and the single most important line in the file. A row in
-            // the store names a file that is not on disk, which is the exact
-            // shape of the "it says it's playing and there's no sound" bug. The
-            // filename is the whole diagnostic — it is what you go and look for
-            // in Documents/Music — so it is .public.
-            Log.playback.error("Could not find file: \(fileName, privacy: .public).mp3")
-            return
-        }
-        
+    @discardableResult
+    private func loadSong(at index: Int) -> Bool {
+        guard songQueue.indices.contains(index) else { return false }
+        let song = songQueue[index]
         do {
-            audioPlayer = try AVAudioPlayer(contentsOf: url)
-            audioPlayer?.delegate = self
-            audioPlayer?.prepareToPlay()
-            songLength = audioPlayer?.duration ?? 0.0
-            currentTime = 0.0
-        } catch {
-            Log.playback.error("Could not create audio player: \(String(describing: error), privacy: .public)")
-        }
-    }
-    
-    // MARK: AVAudioPlayerDelegate
-    // Automatically play the next song when the current one finishes.
-    //
-    // AVFoundation delivers this on the thread running the player's own audio queue, not
-    // necessarily main, and skip() rewrites observable state and reschedules the playback
-    // Timer. Hopping also means this callback has returned before skip() swaps audioPlayer
-    // out, rather than us releasing the player from inside its own delegate method.
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        guard flag else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            Log.playback.debug("Song finished, playing next song")
-            self.skip()
-        }
-    }
-    
-    // MARK: Song Database Functions
-    // Insert a new song
-    // @TODO: Add field for uploading .mp3 files
-    // @TODO: figure out how to handle the population detection issue
-    public func addSong(title: String, artist: String, modelContext: ModelContext) {
-        // "location" was never a context — this stub has been writing a tag that
-        // matches nothing since it was typed. It is unreferenced, so nothing has
-        // ever run it; still, a placeholder that writes junk into the store is
-        // worse than one that writes something inert but real.
-        //
-        // The hardcoded songName is a second, newer problem: it is the unique key
-        // as of LR-16, so two calls to this collide on it. Left alone rather than
-        // invented a fix for, since whoever wires this up has to supply a real
-        // filename anyway — but it should not be the surprise when they do.
-        let newSong = Song(title: title, songName: "filename", artist: artist, locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 9999)
-        modelContext.insert(newSong)
-        try? modelContext.save()
-    }
-
-    // Remove an existing song
-    private func removeSong(_ song: Song, modelContext: ModelContext) {
-        modelContext.delete(song)
-        try? modelContext.save()
-    }
-    
-    // Switch to a new context with a short crossfade.
-    // Called when the user enters a new area (via ContextDetector).
-    public func switchContext(to newContext: MusicContext, songs: [Song], fadeDuration: TimeInterval = 1.5) {
-        guard newContext != currentContext else { return }
-
-        currentContext = newContext
-        let wasPlaying = audioPlayer?.isPlaying ?? false
-
-        guard wasPlaying, let player = audioPlayer else {
-            // Nothing audible — just swap the queue silently, no auto-play
-            reloadQueue(newContext: newContext, shuffle: isShuffled, songs: songs)
-            return
-        }
-
-        // Fade out the old song, then load the new queue and fade the next song in
-        player.setVolume(0.0, fadeDuration: fadeDuration)
-        DispatchQueue.main.asyncAfter(deadline: .now() + fadeDuration) { [weak self] in
-            guard let self = self else { return }
-            self.audioPlayer?.stop() // ensure the faded-out song doesn't keep playing if the new queue is empty
-            // we've already faded this song out and stopped it, so we do want a fresh
-            // track to fade in even if the old one also fits the new context
-            self.reloadQueue(newContext: newContext, shuffle: self.isShuffled, songs: songs, keepCurrentSong: false)
-
-            guard let newPlayer = self.audioPlayer, self.currentSong != nil else { return }
-
-            // We only get here off the back of something that was already audible, so
-            // the session is normally still ours — but this is a play() like any other
-            // and the fade-in would be a silent one if it weren't.
-            guard self.activateSession() else {
-                self.isPaused = true
-                self.updateNowPlayingInfo()
-                return
+            let prepared: AVAudioPlayer
+            if let playerFactory {
+                prepared = try playerFactory(song)
+            } else {
+                guard let url = Self.url(for: song, in: musicDirectory) else {
+                    throw LibraryFailure("The audio file is missing. Reimport it from Files.")
+                }
+                prepared = try AVAudioPlayer(contentsOf: url)
             }
-
-            newPlayer.volume = 0.0
-            newPlayer.play()
-            newPlayer.setVolume(1.0, fadeDuration: fadeDuration)
-            self.isPaused = false
-            self.startPlaybackTimer()
-            self.updateNowPlayingInfo()
-        }
-    }
-
-    // Reset the queue upon entering a new location/context.
-    // keepCurrentSong defaults to true because most callers — a tag toggle, an import,
-    // a delete — are editing the library underneath a song that is happily playing, and
-    // rebuilding the queue should not yank the player out from under it. Only pass false
-    // when the caller genuinely wants to move to a different track.
-    public func reloadQueue(newContext: MusicContext, shuffle: Bool, songs: [Song], keepCurrentSong: Bool = true) {
-
-        // shuffle was decoration until now: the body read the isShuffled property and
-        // ignored the argument entirely. Every caller happens to pass isShuffled, so it
-        // never misbehaved — it was just lying in wait for the first caller that didn't.
-        // Kept rather than deleted because removing it means editing five call sites in
-        // ContentView and LibraryView, which another task owns right now. So instead the
-        // argument becomes the answer, and the published flag is made to agree with it:
-        // the order the queue is actually in and the flag the shuffle button lights up
-        // can no longer disagree, whichever way a caller pushes them.
-        if isShuffled != shuffle {
-            isShuffled = shuffle
-        }
-
-        // add only the new songs to the queue, keeping an unshuffled copy of exactly the
-        // same set. This is the only place either array is rebuilt, so it is the only
-        // place they can be made to match — every branch below inherits both, including
-        // the empty one, where the filter leaves each of them empty together.
-        orderedQueue = songs.filter { $0.isTagged(newContext) }
-        songQueue = orderedQueue
-
-        // shuffle if user has the option toggled
-        if isShuffled {
-            songQueue.shuffle()
-        }
-
-        // Nothing matches any more, so there is no song left to keep. Tear the player
-        // down instead of leaving a stale currentSong playing a track the queue no
-        // longer contains — otherwise the UI reports a song that isn't in the drawer.
-        guard !songQueue.isEmpty else {
-            // .notice, and the only one among the queue lines. Everything else
-            // in reloadQueue is bookkeeping; this branch tears the player down
-            // and hands the audio session back, so it is the moment the app goes
-            // deliberately silent. Correct behaviour, and the thing a user will
-            // report as the app breaking — which is precisely the combination
-            // that has to survive to the log.
-            Log.playback.notice("No songs matched the current context")
-            currentIndex = 0
-            currentSong = nil
-            stopPlaybackTimer()
-            audioPlayer?.stop()
-            audioPlayer = nil
-
-            // The one place we genuinely stop rather than pause: no player, no queue,
-            // nothing for the user to press play on. Hand the session back so whatever
-            // we interrupted on the way in can carry on.
-            deactivateSession()
-            // and drop any pending "resume when the call ends" intent along with it —
-            // we just told the rest of the device we were finished.
-            wasPlayingBeforeInterruption = false
-
-            isPaused = true
-            songLength = 0.0
-            currentTime = 0.0
-            updateNowPlayingInfo()
-            return
-        }
-
-        // If the song that's playing survived the rebuild, just follow it to its new
-        // index and leave audioPlayer alone. Calling loadAudio here would construct a
-        // fresh AVAudioPlayer and deallocate the one mid-song, which is why toggling a
-        // single context chip used to stop the music.
-        if keepCurrentSong,
-           let playing = currentSong,
-           let index = songQueue.firstIndex(where: { $0.songName == playing.songName }) {
+            guard prepared.prepareToPlay(), prepared.duration.isFinite, prepared.duration > 0 else {
+                throw LibraryFailure("The audio file could not be prepared. Reimport a valid audio file.")
+            }
+            clearPlayer()
+            prepared.delegate = self
+            audioPlayer = prepared
+            currentSong = song
+            loadedSongName = song.songName
+            loadedSource = song.isImported
             currentIndex = index
-            Log.playback.debug("Queue reloaded with \(self.songQueue.count) songs, still playing \(playing.songName, privacy: .public)")
-            return
+            songLength = prepared.duration
+            currentTime = prepared.currentTime
+            playbackError = nil
+            updateNowPlayingInfo()
+            return true
+        } catch {
+            clearPlayer()
+            currentIndex = index
+            playbackError = "Cannot load “\(song.title)”: \(error.localizedDescription)"
+            Log.playback.error("Audio load failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
-
-        // Otherwise start at the top of the new queue, but don't auto-play
-        currentIndex = 0
-        currentSong = songQueue[currentIndex]
-        loadAudio(fileName: songQueue[currentIndex].songName)
-        Log.playback.debug("Queue loaded with \(self.songQueue.count) songs")
     }
-    
-    // Timer management for playback progress.
-    // scheduledTimer attaches to the *calling* thread's run loop, so this relies on the
-    // main-thread contract at the top of the file for more than just the currentTime
-    // write below: scheduled from a background thread it would land on a run loop nobody
-    // is running, and the progress bar would simply stop moving. That was reachable until
-    // the remote commands started hopping — a skip from the lock screen froze the scrubber.
-    //
-    // A second known strict-concurrency site, and one the header's list of hops doesn't
-    // cover: Foundation types the block below as @Sendable, so capturing self in it is
-    // reported for the same non-Sendable reason the hops are. It is safe for a stronger
-    // reason than they are, in fact — the run loop this timer is attached to is the main
-    // one, so the block cannot execute anywhere else — but that is a fact about the
-    // scheduling thread, and the closure's type has no way to carry it.
+
+    private func clearPlayer() {
+        stopPlaybackTimer()
+        audioPlayer?.delegate = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        loadedSongName = nil
+        loadedSource = nil
+        currentSong = nil
+        currentIndex = nil
+        isPaused = true
+        currentTime = 0
+        songLength = 0
+        updateNowPlayingInfo()
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        DispatchQueue.main.async { [weak self, weak player] in
+            guard let self, let player, self.audioPlayer === player, !self.isPaused,
+                  !player.isPlaying, self.fadingOutPlayerID != ObjectIdentifier(player) else { return }
+            if flag {
+                self.skip()
+            } else {
+                self.cancelTransition()
+                self.playbackError = "Playback stopped unexpectedly. Try again or reimport this song."
+                self.pauseLoadedSong()
+            }
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let message = error?.localizedDescription ?? "The audio file could not be decoded."
+        DispatchQueue.main.async { [weak self, weak player] in
+            guard let self, let player, self.audioPlayer === player else { return }
+            self.cancelTransition()
+            self.playbackError = "\(message) Reimport this song."
+            self.pauseLoadedSong()
+        }
+    }
+
     private func startPlaybackTimer() {
         stopPlaybackTimer()
-        // every caller of this has just pushed now-playing info itself, so start the
-        // reconciliation interval fresh rather than firing again on the next tick
         ticksSinceNowPlayingSync = 0
         playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self, let player = self.audioPlayer else { return }
-            self.currentTime = player.currentTime
-            if !player.isPlaying {
-                self.stopPlaybackTimer()
-                return
-            }
-
-            // The lock screen works out elapsed time from the last value we handed it
-            // plus the playback rate, so left alone the Control Center scrubber slowly
-            // drifts away from where the song actually is. Pushing on every tick would
-            // fix that, but it means handing the whole dictionary to the media server
-            // twice a second — far more chatter than a scrubber is worth. Reconciling
-            // every few seconds is close enough that nobody can see the difference.
-            self.ticksSinceNowPlayingSync += 1
-            if self.ticksSinceNowPlayingSync >= Self.nowPlayingSyncTicks {
-                self.ticksSinceNowPlayingSync = 0
-                self.updateNowPlayingInfo()
+            DispatchQueue.main.async {
+                guard let self, let player = self.audioPlayer else { return }
+                self.currentTime = player.currentTime
+                if !player.isPlaying {
+                    self.stopPlaybackTimer()
+                    // The finish delegate owns advancement; a timer tick must not
+                    // turn its still-current playback intent into a user pause.
+                    return
+                }
+                self.ticksSinceNowPlayingSync += 1
+                if self.ticksSinceNowPlayingSync >= 10 {
+                    self.ticksSinceNowPlayingSync = 0
+                    self.updateNowPlayingInfo()
+                }
             }
         }
     }
-    
+
     private func stopPlaybackTimer() {
         playbackTimer?.invalidate()
         playbackTimer = nil
     }
+
+    // MARK: Library files and transactions
+
+    nonisolated static var importedMusicDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Music", isDirectory: true)
+    }
+
+    nonisolated private static func importedURL(named name: String, in directory: URL) -> URL? {
+        guard !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\\"), !name.contains("\0") else { return nil }
+        return directory.appendingPathComponent("\(name).mp3")
+    }
+
+    nonisolated private static func bundledURL(named name: String) -> URL? {
+        Bundle.main.url(forResource: name, withExtension: "mp3", subdirectory: "Music")
+    }
+
+    public static func url(for song: Song) -> URL? {
+        url(for: song, in: importedMusicDirectory)
+    }
+
+    static func url(for song: Song, in directory: URL) -> URL? {
+        guard song.isImported else { return bundledURL(named: song.songName) }
+        guard let url = importedURL(named: song.songName, in: directory),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    // Compatibility only: callers with a Song should use the source-aware overload.
+    nonisolated static func url(forSongFile songName: String) -> URL? {
+        if let bundled = bundledURL(named: songName) { return bundled }
+        guard let imported = importedURL(named: songName, in: importedMusicDirectory),
+              FileManager.default.fileExists(atPath: imported.path) else { return nil }
+        return imported
+    }
+
+    public func loadSongsFromBundle(modelContext: ModelContext) -> [Song] {
+        let writer = ModelContext(modelContext.container)
+        writer.autosaveEnabled = false
+        do {
+            guard let folder = Bundle.main.resourceURL?.appendingPathComponent("Music", isDirectory: true) else {
+                throw LibraryFailure("Bundled Music folder is unavailable.")
+            }
+            let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension.lowercased() == "mp3" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            var byName = try existingSongsByName(in: writer)
+            for file in files {
+                let name = file.deletingPathExtension().lastPathComponent
+                if byName[name] != nil { continue }
+                let song = makeImportedSong(name: name, title: name, artist: "Unknown Artist")
+                song.isImported = false
+                writer.insert(song)
+                byName[name] = song
+            }
+            try saveChanges(writer)
+            return Array(byName.values).sorted { $0.songName < $1.songName }
+        } catch {
+            writer.rollback()
+            importReport = "Could not load the bundled library. Reopen LittleRoute to retry: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    public func importSongs(from urls: [URL], modelContext: ModelContext,
+                            replacingExisting: Bool = false) async {
+        let previous = importTask
+        pendingImports += 1
+        isImporting = true
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await self.performImport(from: urls, container: modelContext.container,
+                                     replacingExisting: replacingExisting)
+        }
+        importTask = task
+        await task.value
+        pendingImports -= 1
+        if pendingImports == 0 {
+            importTask = nil
+            isImporting = false
+        }
+    }
+
+    private struct ImportSummary {
+        var imported = 0
+        var replaced = 0
+        var skipped = 0
+        var failures: [String] = []
+        var notes: [String] = []
+        var text: String {
+            (["\(imported) imported, \(replaced) replaced/repaired, \(skipped) duplicates skipped, \(failures.count) failed."]
+             + failures + notes).joined(separator: "\n")
+        }
+    }
+
+    private func performImport(from urls: [URL], container: ModelContainer, replacingExisting: Bool) async {
+        var summary = ImportSummary()
+        var changedFiles: Set<String> = []
+        importProgress = 0
+        importReport = "Importing \(urls.count) file(s)…"
+        let writer = ModelContext(container)
+        writer.autosaveEnabled = false
+        do {
+            try FileManager.default.createDirectory(at: musicDirectory, withIntermediateDirectories: true)
+            var byName = try existingSongsByName(in: writer)
+            for (index, source) in urls.enumerated() {
+                defer { importProgress = Double(index + 1) / Double(urls.count) }
+                let name = source.deletingPathExtension().lastPathComponent
+                guard source.pathExtension.lowercased() == "mp3",
+                      let destination = Self.importedURL(named: name, in: musicDirectory) else {
+                    summary.failures.append("\(source.lastPathComponent): Choose an MP3 with a valid filename.")
+                    continue
+                }
+                if let collision = byName.keys.first(where: { $0 != name && $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                    summary.failures.append("\(name): The filename conflicts with “\(collision)”. Rename the file before importing.")
+                    continue
+                }
+                let existing = byName[name]
+                if existing?.isImported == true,
+                   FileManager.default.fileExists(atPath: destination.path), !replacingExisting {
+                    summary.skipped += 1
+                    summary.notes.append("\(name): Duplicate skipped; existing audio and tags kept.")
+                    continue
+                }
+                let accessing = source.startAccessingSecurityScopedResource()
+                defer { if accessing { source.stopAccessingSecurityScopedResource() } }
+                let staged = musicDirectory.appendingPathComponent(".import-\(UUID().uuidString).mp3")
+                var backup: URL?
+                var installed = false
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try Self.coordinatedCopy(from: source, to: staged)
+                        let player = try AVAudioPlayer(contentsOf: staged)
+                        guard player.prepareToPlay(), player.duration > 0 else {
+                            throw LibraryFailure("This file is not playable audio.")
+                        }
+                    }.value
+                    let metadata = await Self.readMetadata(at: staged, fallback: name)
+                    backup = try Self.installStagedFile(staged, at: destination)
+                    installed = true
+                    let song = existing ?? makeImportedSong(name: name, title: metadata.title, artist: metadata.artist)
+                    if existing == nil { writer.insert(song) }
+                    song.isImported = true
+                    song.title = metadata.title
+                    song.artist = metadata.artist
+                    try saveChanges(writer)
+                    byName[name] = song
+                    changedFiles.insert(name)
+                    if existing == nil { summary.imported += 1 } else { summary.replaced += 1 }
+                    if let backup { Self.removeFile(backup, notes: &summary.notes) }
+                    if let warning = metadata.warning { summary.notes.append("\(name): \(warning)") }
+                } catch {
+                    writer.rollback()
+                    var message = "\(name): \(error.localizedDescription) Try importing again."
+                    if installed {
+                        do { try Self.restoreFile(at: destination, backup: backup) }
+                        catch {
+                            message += " Recovery failed: \(error.localizedDescription). Keep \(backup?.lastPathComponent ?? destination.lastPathComponent) for recovery."
+                        }
+                    }
+                    Self.removeFile(staged, notes: &summary.notes)
+                    summary.failures.append(message)
+                    // A rollback invalidates this context's previous object snapshots.
+                    byName = try existingSongsByName(in: writer)
+                }
+            }
+            if summary.imported + summary.replaced > 0 {
+                let songs = try writer.fetch(FetchDescriptor<Song>())
+                reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: songs,
+                            keepCurrentSong: !changedFiles.contains(loadedSongName ?? ""))
+            }
+        } catch {
+            summary.failures.append("Library could not be read or updated: \(error.localizedDescription). Import stopped; review the item results and reopen LittleRoute before retrying.")
+        }
+        if summary.skipped > 0 {
+            summary.notes.append("Existing imported files and tags were kept. Use Replace Matching Imports in My Music to replace their audio.")
+        }
+        importProgress = 1
+        importReport = summary.text
+    }
+
+    private func makeImportedSong(name: String, title: String, artist: String) -> Song {
+        let song = Song(title: title, songName: name, artist: artist,
+                        locations: [MusicContext.all.storageKey], populationMin: 0,
+                        populationMax: 10_000_000, isImported: true)
+        // Song's legacy initializer strips every ".mp3"; only the final extension
+        // belongs to the importer, so restore the exact basename here.
+        song.songName = name
+        return song
+    }
+
+    private func existingSongsByName(in context: ModelContext) throws -> [String: Song] {
+        let songs = try context.fetch(FetchDescriptor<Song>())
+        return Dictionary(songs.map { ($0.songName, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    nonisolated private static func readMetadata(at url: URL, fallback: String) async
+        -> (title: String, artist: String, warning: String?) {
+        do {
+            let metadata = try await AVURLAsset(url: url).load(.commonMetadata)
+            var title = fallback
+            var artist = "Unknown Artist"
+            if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle).first,
+               let value = try await item.load(.stringValue), !value.isEmpty { title = value }
+            if let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtist).first,
+               let value = try await item.load(.stringValue), !value.isEmpty { artist = value }
+            return (title, artist, nil)
+        } catch {
+            return (fallback, "Unknown Artist", "Audio imported; tags could not be read, so the filename is used.")
+        }
+    }
+
+    nonisolated private static func coordinatedCopy(from source: URL, to destination: URL) throws {
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: source, options: .forUploading, error: &coordinatorError) { url in
+            do { try FileManager.default.copyItem(at: url, to: destination) }
+            catch { copyError = error }
+        }
+        if let coordinatorError { throw coordinatorError }
+        if let copyError { throw copyError }
+    }
+
+    nonisolated private static func installStagedFile(_ staged: URL, at destination: URL) throws -> URL? {
+        let files = FileManager.default
+        guard files.fileExists(atPath: destination.path) else {
+            try files.moveItem(at: staged, to: destination)
+            return nil
+        }
+        let backup = destination.deletingLastPathComponent()
+            .appendingPathComponent(".recovery-\(UUID().uuidString)-\(destination.lastPathComponent)")
+        do {
+            _ = try files.replaceItemAt(destination, withItemAt: staged, backupItemName: backup.lastPathComponent,
+                                       options: .withoutDeletingBackupItem)
+        } catch {
+            let replacementError = error
+            if files.fileExists(atPath: backup.path) {
+                do { try restoreFile(at: destination, backup: backup) }
+                catch {
+                    throw LibraryFailure("Replacement failed: \(replacementError.localizedDescription). Recovery failed: \(error.localizedDescription). Keep \(backup.lastPathComponent) for recovery.")
+                }
+            }
+            throw replacementError
+        }
+        return backup
+    }
+
+    nonisolated private static func restoreFile(at destination: URL, backup: URL?) throws {
+        let files = FileManager.default
+        if let backup {
+            if files.fileExists(atPath: destination.path) {
+                _ = try files.replaceItemAt(destination, withItemAt: backup)
+            } else {
+                try files.moveItem(at: backup, to: destination)
+            }
+        } else {
+            try files.removeItem(at: destination)
+        }
+    }
+
+    nonisolated private static func removeFile(_ file: URL, notes: inout [String]) {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        do { try FileManager.default.removeItem(at: file) }
+        catch { notes.append("Could not remove \(file.lastPathComponent): \(error.localizedDescription). The recovery copy is safe to keep.") }
+    }
+
+    @discardableResult
+    public func deleteImportedSong(_ song: Song, modelContext: ModelContext) -> Bool {
+        guard !isImporting else {
+            importReport = "Wait for importing to finish before deleting a song."
+            return false
+        }
+        let writer = ModelContext(modelContext.container)
+        writer.autosaveEnabled = false
+        var recovery: URL?
+        var destination: URL?
+        do {
+            let songs = try writer.fetch(FetchDescriptor<Song>())
+            guard let stored = songs.first(where: { $0.songName == song.songName }), stored.isImported,
+                  let file = Self.importedURL(named: stored.songName, in: musicDirectory) else {
+                throw LibraryFailure("Only imported songs can be removed. Reopen My Music and retry.")
+            }
+            destination = file
+            if FileManager.default.fileExists(atPath: file.path) {
+                let staged = musicDirectory.appendingPathComponent(".recovery-\(UUID().uuidString)-\(file.lastPathComponent)")
+                try FileManager.default.moveItem(at: file, to: staged)
+                recovery = staged
+            }
+            let restoresBundle = Self.bundledURL(named: stored.songName) != nil
+            if restoresBundle {
+                stored.isImported = false
+                stored.title = stored.songName
+                stored.artist = "Unknown Artist"
+            } else {
+                writer.delete(stored)
+            }
+            try saveChanges(writer)
+            var notes: [String] = []
+            if let recovery { Self.removeFile(recovery, notes: &notes) }
+            importReport = ([restoresBundle ? "Imported copy removed; the bundled song and its tags were kept." : "Song deleted. Import the original file to add it again."] + notes).joined(separator: "\n")
+            // Use this successful transaction's complete library, never the UI's search.
+            reloadQueue(newContext: currentContext, shuffle: isShuffled,
+                        songs: restoresBundle ? songs : songs.filter { $0 !== stored })
+            return true
+        } catch {
+            writer.rollback()
+            var message = "Could not delete the song: \(error.localizedDescription). The library entry was kept."
+            if let recovery, let destination {
+                do { try FileManager.default.moveItem(at: recovery, to: destination) }
+                catch { message += " Restore failed: \(error.localizedDescription). Your audio is kept at \(recovery.lastPathComponent); keep that file for recovery." }
+            }
+            importReport = message
+            return false
+        }
+    }
+
+    public func addSong(title: String, artist: String, modelContext: ModelContext) {
+        let writer = ModelContext(modelContext.container)
+        writer.autosaveEnabled = false
+        do {
+            guard try existingSongsByName(in: writer)["filename"] == nil else {
+                throw LibraryFailure("The placeholder song already exists. Use Import to add a different audio file.")
+            }
+            writer.insert(Song(title: title, songName: "filename", artist: artist,
+                               locations: [MusicContext.all.storageKey], populationMin: 0, populationMax: 9999))
+            try saveChanges(writer)
+        } catch {
+            writer.rollback()
+            importReport = "Could not add the song: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct LibraryFailure: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
 }

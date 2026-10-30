@@ -26,6 +26,7 @@ final class LittleRouteUITests: XCTestCase {
     func testExample() throws {
         // UI tests must launch the application that they test.
         let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
         app.launch()
 
         // Use XCTAssert and related functions to verify your tests produce the correct results.
@@ -36,7 +37,35 @@ final class LittleRouteUITests: XCTestCase {
         if #available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 7.0, *) {
             // This measures how long it takes to launch your application.
             measure(metrics: [XCTApplicationLaunchMetric()]) {
-                XCUIApplication().launch()
+                let app = XCUIApplication()
+                app.launchArguments = ["--ui-testing"]
+                app.launch()
+            }
+
+            @MainActor
+            func testMapExpandsWithoutBlockingManualLibraryAccess() {
+                let app = XCUIApplication()
+                app.launchArguments = ["--ui-testing"]
+                app.launch()
+                let expand = app.buttons["expandContextMap"]
+                XCTAssertTrue(expand.waitForExistence(timeout: 10))
+                if !expand.isHittable { app.swipeUp() }
+                expand.tap()
+                XCTAssertTrue(app.navigationBars["Music Zones"].waitForExistence(timeout: 10))
+                app.buttons["Done"].firstMatch.tap()
+                app.buttons["openLibrary"].tap()
+                XCTAssertTrue(app.navigationBars["My Music"].waitForExistence(timeout: 10))
+            }
+
+            @MainActor
+            func testDegradedStoreDisablesImportAndExplainsRecovery() {
+                let app = XCUIApplication()
+                app.launchArguments = ["--ui-testing", "--store-unavailable"]
+                app.launch()
+                XCTAssertTrue(app.descendants(matching: .any)["libraryStoreWarning"].waitForExistence(timeout: 10))
+                XCTAssertFalse(app.buttons["Import songs"].isEnabled)
+                app.buttons["openLibrary"].tap()
+                XCTAssertTrue(app.descendants(matching: .any)["libraryUnavailable"].waitForExistence(timeout: 10))
             }
         }
     }
