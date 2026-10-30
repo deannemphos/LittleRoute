@@ -23,6 +23,7 @@ struct ContentView: View {
     // the parts of this body that read the clock.
     private let audioManager = AudioPlayerManager.shared
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelStoreHealth) private var storeHealth
 
     // Owned by LittleRouteApp and injected, not constructed here: a View can't
     // own these. Re-initializing ContentView would have built a second
@@ -94,15 +95,27 @@ struct ContentView: View {
     var body: some View {
 
         // Show error screen if location permission is denied
-        if locationHandler.authorizationStatus == .denied || locationHandler.authorizationStatus == .restricted {
-            ErrorView(
-                errorTitle: "Location Access Required",
-                errorMessage: "LittleRoute needs your location to play music matching your surroundings.",
-                fixInstructions: "Go to Settings > Privacy & Security > Location Services and enable location for LittleRoute.",
-                onRetryAction: { locationHandler.requestLocationAuthorization() }
-            )
-        } else {
-            player
+        Group {
+            if locationHandler.authorizationStatus == .denied || locationHandler.authorizationStatus == .restricted {
+                ErrorView(
+                    errorTitle: "Location Access Required",
+                    errorMessage: "LittleRoute needs your location to play music matching your surroundings.",
+                    fixInstructions: "Go to Settings > Privacy & Security > Location Services and enable location for LittleRoute.",
+                    onRetryAction: { locationHandler.requestLocationAuthorization() }
+                )
+            } else {
+                player
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if storeHealth.isDegraded {
+                Label("Your music library could not be opened. Importing and editing are unavailable; your saved library has not been deleted. Close and reopen LittleRoute to retry.", systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.callout)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("libraryStoreWarning")
+            }
         }
     }
 
@@ -174,13 +187,13 @@ struct ContentView: View {
             audioManager.currentContext = contextDetector.confirmedContext
 
             // Load songs from Music folder if none exist
-            if songs.isEmpty {
+            if songs.isEmpty && !storeHealth.isDegraded {
                 let loadedSongs = audioManager.loadSongsFromBundle(modelContext: modelContext)
                 // Queue the loaded songs immediately
                 if !loadedSongs.isEmpty {
                     audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: loadedSongs)
                 }
-            } else {
+            } else if !songs.isEmpty {
                 // Populate the song queue with all songs from the database
                 audioManager.reloadQueue(newContext: audioManager.currentContext, shuffle: audioManager.isShuffled, songs: songs)
             }
@@ -433,6 +446,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Import songs")
                 .accessibilityHint("Choose MP3s from the Files app.")
+                .disabled(storeHealth.isDegraded)
                 Spacer()
                 Button {
                     themeRaw = theme.next.rawValue

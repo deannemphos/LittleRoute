@@ -113,8 +113,8 @@ struct LittleRouteApp: App {
     //
     // Falling back to memory is a genuine trade, not a free win. The app
     // launches, but the library looks empty and nothing written survives the
-    // quit. That is only better than crashing if the user is told, hence
-    // storeHealth — see the @TODO on body.
+    // quit. ContentView shows a persistent warning and both import entry points
+    // and library editing are disabled through storeHealth.
     //
     // Note what this deliberately does NOT do: it doesn't delete or move the
     // failed store. Those bytes are the user's library, and a store today's
@@ -163,14 +163,6 @@ struct LittleRouteApp: App {
                 // reads them back with @Environment(Type.self).
                 .environment(locationHandler)
                 .environment(contextDetector)
-                // @TODO: nothing reads this yet, and that's the unfinished
-                // half of LR-10 — a degraded launch currently looks exactly
-                // like a first launch with an empty library, which is the
-                // dangerous part. Surface it in ContentView as a persistent
-                // banner (not a dismissible alert; the condition lasts the
-                // whole session) saying the library couldn't be opened and
-                // that changes won't be saved. That's a view change in
-                // LR-30b's files, so it isn't done here.
                 .environment(\.modelStoreHealth, storeHealth)
         }
         .modelContainer(sharedModelContainer)
