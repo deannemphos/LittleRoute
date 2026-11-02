@@ -39,7 +39,14 @@ jobs:
           print(f"Using {name}, iOS {'.'.join(map(str, version))}, {udid}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"destination=platform=iOS Simulator,id={udid}\n")
+              output.write(f"udid={udid}\n")
           PY
+      - name: Boot the selected simulator
+        timeout-minutes: 5
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
       - name: Build
         env:
           DESTINATION: ${{ steps.simulator.outputs.destination }}
@@ -51,7 +58,8 @@ jobs:
             -destination "$DESTINATION" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
-      - name: Test
+      - name: Unit and integration tests
+        timeout-minutes: 8
         env:
           DESTINATION: ${{ steps.simulator.outputs.destination }}
         run: |
@@ -60,7 +68,24 @@ jobs:
             -scheme LittleRoute \
             -destination "$DESTINATION" \
             -derivedDataPath build \
-            -resultBundlePath TestResults.xcresult \
+            -resultBundlePath UnitResults.xcresult \
+            -only-testing:LittleRouteTests \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -maximum-test-execution-time-allowance 120 \
+            CODE_SIGNING_ALLOWED=NO
+      - name: UI tests
+        timeout-minutes: 8
+        env:
+          DESTINATION: ${{ steps.simulator.outputs.destination }}
+        run: |
+          xcodebuild test-without-building \
+            -project LittleRoute.xcodeproj \
+            -scheme LittleRoute \
+            -destination "$DESTINATION" \
+            -derivedDataPath build \
+            -resultBundlePath UIResults.xcresult \
+            -only-testing:LittleRouteUITests \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -maximum-test-execution-time-allowance 120 \
@@ -69,5 +94,7 @@ jobs:
         if: always()
         with:
           name: iOS-test-results
-          path: TestResults.xcresult
+          path: |
+            UnitResults.xcresult
+            UIResults.xcresult
           if-no-files-found: warn
