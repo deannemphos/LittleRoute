@@ -199,8 +199,8 @@ struct QueueDrawerView: View {
                 } else {
                     Color(.systemBackground)
                 }
-                .ignoresSafeArea(edges: .vertical)
             }
+            .ignoresSafeArea(edges: .vertical)
         )
         .overlay(
             Rectangle()

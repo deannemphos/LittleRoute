@@ -62,6 +62,9 @@ struct LittleRouteApp: App {
     @State private var locationHandler: LocationHandler
     @State private var contextDetector: ContextDetector
     @State private var playbackCoordinator: PlaybackCoordinator
+    #if DEBUG
+    @State private var previewProvider: ContextPreviewProvider?
+    #endif
 
     // MARK: - Persistence
     //
@@ -99,7 +102,19 @@ struct LittleRouteApp: App {
         // is a live dependency hiding in a signature. This is the one place a
         // real one gets built; tests pass nil.
         let handler = LocationHandler()
-        let detector = ContextDetector(poiProvider: handler, weatherProvider: WeatherKitProvider())
+        let detector: ContextDetector
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--zones-fixture") {
+            let preview = ContextPreviewProvider()
+            _previewProvider = State(initialValue: preview)
+            detector = ContextDetector(poiProvider: preview, weatherProvider: nil)
+        } else {
+            _previewProvider = State(initialValue: nil)
+            detector = ContextDetector(poiProvider: handler, weatherProvider: WeatherKitProvider())
+        }
+        #else
+        detector = ContextDetector(poiProvider: handler, weatherProvider: WeatherKitProvider())
+        #endif
         let coordinator = PlaybackCoordinator(detector: detector, audio: AudioPlayerManager.shared,
                                               modelContext: container.mainContext, storeHealth: health)
         _locationHandler = State(initialValue: handler)
@@ -109,6 +124,11 @@ struct LittleRouteApp: App {
             coordinator.start()
             handler.startLocationUpdates()
         }
+        #if DEBUG
+        if PlaybackCoordinator.isTesting && ProcessInfo.processInfo.arguments.contains("--zones-fixture") {
+            detector.start()
+        }
+        #endif
     }
 
     // MARK: - Container construction
