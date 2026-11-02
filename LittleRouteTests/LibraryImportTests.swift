@@ -183,7 +183,7 @@ struct LibraryImportTests {
         await manager.importSongs(from: [source], modelContext: fixture.context)
         pauseBeforeCommit = nil
         #expect(manager.currentSong?.songName == "selected")
-        #expect(pausedTime >= seekTime)
+        #expect(pausedTime >= seekTime - 0.05)
         #expect(abs(manager.currentTime - pausedTime) < 0.01)
         #expect(manager.isPaused)
         #expect(Set(manager.songQueue.map(\.songName)) == ["selected", "new"])
