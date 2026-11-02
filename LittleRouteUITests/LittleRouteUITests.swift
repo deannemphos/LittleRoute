@@ -17,6 +17,7 @@ final class LittleRouteUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Music Zones"].waitForExistence(timeout: 10))
         let status = app.staticTexts["contextStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 10))
+        defer { if status.exists { print("Zone fixture status: \(status.label)") } }
         let ready = NSPredicate(format: "label CONTAINS %@", "Parks")
         expectation(for: ready, evaluatedWith: status)
         waitForExpectations(timeout: 15)

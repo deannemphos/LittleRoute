@@ -120,16 +120,6 @@ struct LittleRouteApp: App {
         _locationHandler = State(initialValue: handler)
         _contextDetector = State(initialValue: detector)
         _playbackCoordinator = State(initialValue: coordinator)
-        if !PlaybackCoordinator.isTesting {
-            coordinator.start()
-            handler.startLocationUpdates()
-        }
-        #if DEBUG
-        if PlaybackCoordinator.isTesting && ProcessInfo.processInfo.arguments.contains("--zones-fixture") {
-            previewProvider?.start()
-            detector.start()
-        }
-        #endif
     }
 
     // MARK: - Container construction
@@ -202,6 +192,19 @@ struct LittleRouteApp: App {
                 .environment(locationHandler)
                 .environment(contextDetector)
                 .environment(\.modelStoreHealth, storeHealth)
+                .task {
+                    // State is installed here; App.init can run for discarded values.
+                    if !PlaybackCoordinator.isTesting {
+                        playbackCoordinator.start()
+                        locationHandler.startLocationUpdates()
+                    }
+                    #if DEBUG
+                    if PlaybackCoordinator.isTesting, let previewProvider {
+                        previewProvider.start()
+                        contextDetector.start()
+                    }
+                    #endif
+                }
         }
         .modelContainer(sharedModelContainer)
     }
