@@ -12,7 +12,8 @@ struct MapView: View {
             if let snapshot = contextDetector.snapshot {
                 ForEach(snapshot.regions) { region in
                     let active = region.context == contextDetector.geographicContext
-                    let pending = region.context == contextDetector.candidateContext && !active
+                    let pending = region.context == contextDetector.candidateContext &&
+                        region.context != contextDetector.confirmedContext
                     MapPolygon(region.polygon)
                         .foregroundStyle(region.context.tintColor.opacity(active ? 0.25 : 0.09))
                         .stroke(region.context.tintColor.opacity(active || pending ? 0.95 : 0.5),

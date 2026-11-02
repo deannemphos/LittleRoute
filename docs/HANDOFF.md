@@ -1,5 +1,40 @@
 # LittleRoute Remediation — Handoff
 
+## Predictable-zone implementation update
+
+The remainder of this file is the historical `contexts` remediation handoff,
+not the current status or implementation instructions. See the repository
+README for current zone, stability, queue, library and build behavior.
+
+Work on `copilot/predictable-context-zones` adds shared weighted polygons,
+30-second fresh-evidence confirmation and 90-second automatic residence,
+an expandable map, separate modifier/fallback explanations, app-owned playback
+coordination, cancellable audio transitions and recoverable library operations.
+The branch has been committed and pushed; it is not merged into `main`.
+
+Unsigned iOS builds and simulator compilation pass. Runtime CI has verified the
+classifier/detector, weighted topology/reference checks, audio/queue lifetimes
+and V1/V2/V3/V4 store upgrades. V3 and V4 have identical stored shapes: the plan
+now uses their shared shape and normalizes tags before V5, instead of attempting
+the equal-model migration that raised an Objective-C exception.
+
+The integrated macOS run at `b5c5dd4` passes all 139 unit/integration tests and
+six UI tests, including expanded-map status, modal accessibility isolation,
+queue dismissal and degraded-store recovery. Its captured synthetic map is in
+the CI result bundle. A candidate remains dashed even when it already owns the
+geographic area; crossing that outline still does not bypass confirmation.
+
+Optimized Swift 6.3.3 on the Windows host measured a 61.27 ms p95 geometry build
+for 100 POIs over a 1.2 km square at 10 m sampling (30 builds after one warmup).
+The 2 m reference fixtures cover 860,000 points with no ownership differences
+outside the 20 m ambiguity band. These are not iPhone performance claims.
+
+Physical-iPhone background, interruption, accessibility, frame-rate, memory and
+energy checks remain release requirements. No device performance or locked-phone
+reliability qualification has been performed from this Windows environment.
+
+## Historical handoff
+
 Continuation of `docs/REMEDIATION.md`. That file holds the full 32-task plan and
 the per-task specs. This file records what is done and what is left.
 
