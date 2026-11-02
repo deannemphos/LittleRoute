@@ -69,6 +69,12 @@ struct ContextStatusView: View {
             if audioManager.queueSource != audioManager.currentContext, !audioManager.songQueue.isEmpty {
                 Text("Playing All songs: no songs tagged \(audioManager.currentContext.displayName).").font(.caption)
             }
+            if audioManager.songQueue.isEmpty {
+                Text(audioManager.currentContext == .all
+                     ? "Import songs to start listening."
+                     : "No songs tagged \(audioManager.currentContext.displayName) or All. Import music or edit tags in your library.")
+                    .font(.caption)
+            }
             if let distance = contextDetector.boundaryDistance {
                 Text("Nearest boundary: about \(distance, format: .number.precision(.fractionLength(0))) m").font(.caption)
             }

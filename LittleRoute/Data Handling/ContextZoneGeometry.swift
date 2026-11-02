@@ -2,6 +2,8 @@ import Foundation
 
 /// A bounded, piecewise-linear approximation of the geographic score field.
 /// Map drawing and containment both use this partition, never separate classifiers.
+/// With the default 10 m mesh, allow a 20 m ambiguity band around continuous
+/// score-field boundaries; sub-mesh islands may not be represented.
 struct ContextZoneGeometry: Sendable {
     struct Point: Hashable, Sendable {
         let x: Double
@@ -122,7 +124,8 @@ struct ContextZoneGeometry: Sendable {
         }
         func append(_ polygon: [Vertex], context: String) {
             let points = polygon.map { Key($0.point) }
-            guard points.count >= 3, abs(area(points.map(\.point))) > 0.0001 else { return }
+            // Even a tiny clipped face supplies the reverse of a neighboring edge.
+            guard points.count >= 3, abs(area(points.map(\.point))) > 0 else { return }
             for index in points.indices {
                 let edge = Edge(a: points[index], b: points[(index + 1) % points.count])
                 guard edge.a != edge.b else { continue }
@@ -313,11 +316,11 @@ struct ContextZoneGeometry: Sendable {
             guard ring.last == ring.first else { throw GeometryError.invalidTopology }
             ring.removeLast()
             let simplified = ring.indices.compactMap { index -> Point? in
-                let a = ring[(index + ring.count - 1) % ring.count]
-                let b = ring[index]
-                let c = ring[(index + 1) % ring.count]
-                let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
-                return abs(cross) < 1e-8 ? nil : b
+                let a = Key(ring[(index + ring.count - 1) % ring.count])
+                let b = Key(ring[index])
+                let c = Key(ring[(index + 1) % ring.count])
+                let cross = Double(b.x - a.x) * Double(c.y - b.y) - Double(b.y - a.y) * Double(c.x - b.x)
+                return cross == 0 ? nil : b.point
             }
             if simplified.count >= 3 { result.append(simplified) }
         }

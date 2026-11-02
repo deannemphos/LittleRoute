@@ -7,11 +7,32 @@ import MapKit
 final class ContextPreviewProvider: POIProviding {
     var currentLocation: CLLocation?
     var onLocationUpdate: ((CLLocation) -> Void)?
+    private var updates: Task<Void, Never>?
 
     init() {
         currentLocation = CLLocation(coordinate: .init(latitude: 37.3349, longitude: -122.009),
                                      altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
                                      course: 0, speed: 0, timestamp: Date())
+    }
+
+    deinit { updates?.cancel() }
+
+    func start() {
+        guard updates == nil else { return }
+        updates = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    return
+                }
+                guard let self, let coordinate = self.currentLocation?.coordinate else { return }
+                let fix = CLLocation(coordinate: coordinate, altitude: 0, horizontalAccuracy: 10,
+                                     verticalAccuracy: 10, course: 0, speed: 0, timestamp: Date())
+                self.currentLocation = fix
+                self.onLocationUpdate?(fix)
+            }
+        }
     }
 
     func getPointsOfInterest(radius: CLLocationDistance, filter: [MKPointOfInterestCategory]?,

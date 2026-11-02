@@ -126,6 +126,7 @@ struct LittleRouteApp: App {
         }
         #if DEBUG
         if PlaybackCoordinator.isTesting && ProcessInfo.processInfo.arguments.contains("--zones-fixture") {
+            previewProvider?.start()
             detector.start()
         }
         #endif
