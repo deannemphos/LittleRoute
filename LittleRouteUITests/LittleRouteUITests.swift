@@ -17,10 +17,10 @@ final class LittleRouteUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Music Zones"].waitForExistence(timeout: 10))
         let status = app.staticTexts["contextStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 10))
-        defer { if status.exists { print("Zone fixture status: \(status.label)") } }
+        XCTAssertEqual(app.staticTexts.matching(identifier: "contextStatus").count, 1)
         let ready = NSPredicate(format: "label CONTAINS %@", "Parks")
-        expectation(for: ready, evaluatedWith: status)
-        waitForExpectations(timeout: 15)
+        let confirmation = XCTNSPredicateExpectation(predicate: ready, object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmation], timeout: 15), .completed, "Zone status: \(status.label)")
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Weighted context polygons"
         screenshot.lifetime = .keepAlways

@@ -57,12 +57,14 @@ struct ContentView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
-            .accessibilityHidden(queueDrawerOpen)
-            .allowsHitTesting(!queueDrawerOpen)
+            .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary)
+            .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary)
             QueueDrawerView(audioManager: audioManager, isOpen: $queueDrawerOpen)
+                .accessibilityHidden(showExpandedMap || showLibrary)
+                .allowsHitTesting(!showExpandedMap && !showLibrary)
             topBar
-                .accessibilityHidden(queueDrawerOpen)
-                .allowsHitTesting(!queueDrawerOpen)
+                .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary)
+                .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary)
         }
         .safeAreaInset(edge: .bottom) {
             if storeHealth.isDegraded {
@@ -70,6 +72,7 @@ struct ContentView: View {
                     .font(.callout).padding().frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial)
                     .accessibilityIdentifier("libraryStoreWarning")
+                    .accessibilityHidden(showExpandedMap || showLibrary || queueDrawerOpen)
             }
         }
         .sheet(isPresented: $showLibrary) { LibraryView() }
