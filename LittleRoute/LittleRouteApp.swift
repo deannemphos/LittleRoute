@@ -101,7 +101,7 @@ struct LittleRouteApp: App {
         // WeatherKitProvider() — a default argument that opens a network client
         // is a live dependency hiding in a signature. This is the one place a
         // real one gets built; tests pass nil.
-        let handler = LocationHandler()
+        let handler = LocationHandler(automaticallyStarts: !PlaybackCoordinator.isTesting)
         let detector: ContextDetector
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--zones-fixture") {

@@ -86,6 +86,20 @@ struct PlaybackTests {
         #expect(manager.playbackError == nil)
     }
 
+    @Test func reportingAndClearingErrorsDoesNotChangePlaybackOrPlayhead() {
+        let manager = manager(loading: songs("a", "b"))
+        defer { stop(manager) }
+        manager.seek(to: 3)
+        let loaded = manager.currentSong
+        manager.reportPlaybackError("Library refresh failed.")
+        #expect(manager.playbackError == "Library refresh failed.")
+        manager.clearPlaybackError()
+        #expect(manager.playbackError == nil)
+        #expect(manager.currentSong === loaded)
+        #expect(manager.currentTime == 3)
+        #expect(manager.isPaused)
+    }
+
     @Test func reloadFollowsSurvivingSongAndPreservesPlayhead() {
         let a = song("a")
         let b = song("b")
@@ -207,6 +221,16 @@ struct PlaybackTests {
         #expect(manager.currentSong === only)
     }
 
+    @Test func selectionMatchesTheAudioSourceAsWellAsTheFilename() {
+        let bundled = song("same")
+        let imported = song("same")
+        imported.isImported = true
+        let manager = manager(loading: [bundled, imported])
+        defer { stop(manager) }
+        manager.play(song: imported)
+        #expect(manager.currentSong === imported)
+    }
+
     @Test func unmatchedExactAndFallbackPoolsClearAllPlayerState() {
         let library = songs("a", "b", contexts: [.beach])
         let manager = manager(loading: library, context: .beach)
@@ -321,6 +345,33 @@ struct PlaybackTests {
         #expect(manager.currentContext == .gym)
         #expect(manager.queueSource == .gym)
         #expect(!manager.isPaused)
+    }
+
+    @Test func contextChangeDuringFadeInCannotLetOldCompletionChangeTheNewestPlayer() async throws {
+        let audio = PlaybackAudioFixture.wav()
+        var players: [AVAudioPlayer] = []
+        let library = [song("a"), song("b", contexts: [.beach]), song("c", contexts: [.gym])]
+        let manager = AudioPlayerManager(playerFactory: { _ in
+            let player = try AVAudioPlayer(data: audio)
+            players.append(player)
+            return player
+        }, managesSystemAudio: false)
+        defer { stop(manager) }
+        manager.reloadQueue(newContext: .all, shuffle: false, songs: library)
+        manager.musicPlayPause()
+        manager.switchContext(to: .beach, songs: library, fadeDuration: 0.1)
+        for _ in 0..<100 where players.count < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(manager.currentSong?.songName == "b")
+        manager.switchContext(to: .gym, songs: library, fadeDuration: 0.02)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(manager.currentSong?.songName == "c")
+        #expect(manager.currentContext == .gym)
+        #expect(!manager.isPaused)
+        #expect(players.count == 3)
+        #expect(players.last?.volume == 1)
+        #expect(players.dropLast().allSatisfy { !$0.isPlaying })
     }
 
     @Test func seekingCancelsFadeAndKeepsCurrentPlayerAtRequestedTime() async throws {

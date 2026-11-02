@@ -81,6 +81,15 @@ final class ContextDetector {
     @ObservationIgnored private var geometryWorker: Task<ContextZoneGeometry, Error>?
     @ObservationIgnored private var geometryTask: Task<Void, Never>?
     @ObservationIgnored private var cache: [CachedRegion] = []
+    @ObservationIgnored private var publishedSources: [GeometrySource] = []
+
+    private struct GeometrySource: Equatable {
+        let id: String
+        let latitude: Double
+        let longitude: Double
+        let context: String
+        let radius: Double
+    }
 
     private struct CachedRegion {
         let location: CLLocation
@@ -261,6 +270,10 @@ final class ContextDetector {
         }
         let bounds = ContextZoneGeometry.Bounds(minX: center.x - radius, minY: center.y - radius,
                                                 maxX: center.x + radius, maxY: center.y + radius)
+        let sources = nearby.map {
+            GeometrySource(id: $0.id, latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude,
+                           context: $0.context.storageKey, radius: $0.radius)
+        }
         geometryGeneration += 1
         let generation = geometryGeneration
         geometryWorker?.cancel()
@@ -280,12 +293,13 @@ final class ContextDetector {
                 self.snapshot = snapshot
                 self.zones = nearby
                 if let current = self.lastValidLocation, self.isUsable(current) {
-                    if previous != geometry.context(at: snapshot.point(for: current)) {
+                    if self.publishedSources != sources || previous != geometry.context(at: snapshot.point(for: current)) {
                         self.transition.resetCandidate()
                         self.lastProcessedFix = nil
                     }
                     self.apply(current)
                 }
+                self.publishedSources = sources
             } catch is CancellationError {
                 // Superseded geometry has no authority to publish.
             } catch {

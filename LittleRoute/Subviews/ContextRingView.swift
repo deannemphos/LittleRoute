@@ -13,6 +13,7 @@ struct ContextRingView: View {
     var context: MusicContext
     let diameter: CGFloat
     var color: Color
+    let isPlaying: Bool
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -21,7 +22,7 @@ struct ContextRingView: View {
     @State private var bouncing = false
 
     private var shouldAnimate: Bool {
-        isVisible && scenePhase == .active && !reduceMotion
+        isVisible && scenePhase == .active && !reduceMotion && isPlaying
     }
 
     var body: some View {

@@ -119,4 +119,71 @@ final class DetectorFlowTests {
         #expect(provider.requests.count == 1)
         detector.stop()
     }
+
+    @Test func staleCandidateCannotBeManuallyPromoted() async {
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.canSwitchNow)
+        clock.addTimeInterval(16)
+        #expect(!detector.canSwitchNow)
+        detector.switchNow()
+        #expect(detector.confirmedContext == .all)
+        detector.stop()
+    }
+
+    @Test func changedBoundarySourcesRestartEvidenceEvenWhenOwnershipMatches() async {
+        func park(metersEast: Double) -> MKMapItem {
+            let item = MKMapItem(placemark: MKPlacemark(coordinate:
+                .init(latitude: 0, longitude: metersEast / 111_195)))
+            item.name = "Fixture Park"
+            item.pointOfInterestCategory = .park
+            return item
+        }
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success([park(metersEast: 0)]))
+        await detector.waitForPendingGeometry()
+        for time in stride(from: 5.0, through: 25.0, by: 5) { deliver(time) }
+        detector.refreshNow()
+        #expect(provider.requests.count == 2)
+        provider.requests[1](.success([park(metersEast: 100)]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .park)
+        #expect(detector.candidateSince == clock)
+        for time in stride(from: 30.0, through: 50.0, by: 5) { deliver(time) }
+        #expect(detector.confirmedContext == .all)
+        deliver(55)
+        #expect(detector.confirmedContext == .park)
+        detector.stop()
+    }
+
+    @Test func longLocationGapDoesNotCountAsDwell() async {
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        deliver(5)
+        deliver(10)
+        deliver(50)
+        #expect(detector.confirmedContext == .all)
+        #expect(detector.candidateSince == clock)
+        detector.stop()
+    }
+
+    @Test func projectionWrapsAntimeridianAndRoundTripsHighLatitudes() {
+        for latitude in [0.0, 60, 84] {
+            let projection = ZoneProjection(latitude: latitude, longitude: 179.999)
+            let point = projection.point(latitude: latitude + 0.001, longitude: -179.999)
+            #expect(abs(point.x) < 225)
+            #expect(abs(point.y - 111.195) < 0.01)
+            let coordinate = projection.coordinate(point)
+            #expect(abs(coordinate.latitude - latitude - 0.001) < 1e-8)
+            #expect(abs(coordinate.longitude + 179.999) < 1e-8)
+        }
+    }
 }

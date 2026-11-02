@@ -49,9 +49,10 @@ private struct ImportFixture {
         catch { Issue.record("Could not clean test audio: \(error)") }
     }
 
-    func manager(failingSave: Bool = false) -> AudioPlayerManager {
+    func manager(failingSave: Bool = false, beforeSave: (() -> Void)? = nil) -> AudioPlayerManager {
         AudioPlayerManager(musicDirectory: music, managesSystemAudio: false, saveChanges: { writer in
             if failingSave { throw CocoaError(.fileWriteNoPermission) }
+            beforeSave?()
             try writer.save()
         })
     }
@@ -114,6 +115,57 @@ struct LibraryImportTests {
         #expect(try fixture.storedSongs().first?.locations == ["gym", "legacy-tag"])
         #expect(manager.importReport?.contains("1 replaced/repaired") == true)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.music.path) == ["track.mp3"])
+    }
+
+    @Test func replacingLoadedFileReloadsThatSongInsteadOfJumpingToQueueStart() async throws {
+        let fixture = try ImportFixture()
+        let manager = fixture.manager()
+        defer { fixture.cleanup(manager) }
+        let first = try fixture.seed("first")
+        let selected = try fixture.seed("selected")
+        first.locations = ["all"]
+        selected.locations = ["all"]
+        try fixture.context.save()
+        for name in ["first", "selected"] {
+            try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
+        }
+        manager.reloadQueue(newContext: .all, shuffle: false, songs: [first, selected])
+        manager.play(song: selected)
+        manager.seek(to: 3)
+        let source = try fixture.source("selected.mp3", data: PlaybackAudioFixture.wav(seconds: 2))
+        await manager.importSongs(from: [source], modelContext: fixture.context, replacingExisting: true)
+        #expect(manager.currentSong?.songName == "selected")
+        #expect(manager.songLength > 1.9 && manager.songLength < 2.1)
+        #expect(!manager.isPaused)
+        #expect(manager.playbackError == nil)
+        #expect(manager.importReport?.contains("1 replaced/repaired") == true)
+    }
+
+    @Test func importingAnotherSongPreservesLoadedPlayerTimeAndLatestPause() async throws {
+        let fixture = try ImportFixture()
+        var pauseBeforeCommit: (() -> Void)?
+        let manager = fixture.manager(beforeSave: { pauseBeforeCommit?() })
+        defer { fixture.cleanup(manager) }
+        let selected = try fixture.seed("selected")
+        selected.locations = ["all"]
+        try fixture.context.save()
+        try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("selected.mp3"))
+        manager.reloadQueue(newContext: .all, shuffle: false, songs: [selected])
+        manager.musicPlayPause()
+        manager.seek(to: 3)
+        let source = try fixture.source("new.mp3")
+        var pausedTime: TimeInterval = 0
+        pauseBeforeCommit = {
+            manager.musicPlayPause()
+            pausedTime = manager.currentTime
+        }
+        await manager.importSongs(from: [source], modelContext: fixture.context)
+        pauseBeforeCommit = nil
+        #expect(manager.currentSong?.songName == "selected")
+        #expect(pausedTime >= 3)
+        #expect(abs(manager.currentTime - pausedTime) < 0.01)
+        #expect(manager.isPaused)
+        #expect(Set(manager.songQueue.map(\.songName)) == ["selected", "new"])
     }
 
     @Test func bundledNameCollisionSelectsImportedSourceWithoutDiscardingTags() async throws {
@@ -182,6 +234,27 @@ struct LibraryImportTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.music.appendingPathComponent("new.mp3").path))
     }
 
+    @Test func aFailedItemDoesNotRollBackEarlierSuccessfulImports() async throws {
+        let fixture = try ImportFixture()
+        let manager = AudioPlayerManager(musicDirectory: fixture.music, managesSystemAudio: false,
+                                         saveChanges: { writer in
+            if try writer.fetch(FetchDescriptor<Song>()).contains(where: { $0.songName == "rejected" }) {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try writer.save()
+        })
+        defer { fixture.cleanup(manager) }
+        let first = try fixture.source("first.mp3")
+        let rejected = try fixture.source("rejected.mp3")
+        let last = try fixture.source("last.mp3")
+        await manager.importSongs(from: [first, rejected, last], modelContext: fixture.context)
+        #expect(Set(try fixture.storedSongs().map(\.songName)) == ["first", "last"])
+        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: fixture.music.path)) == ["first.mp3", "last.mp3"])
+        #expect(manager.importReport?.contains("2 imported") == true)
+        #expect(manager.importReport?.contains("1 failed") == true)
+        #expect(Set(manager.songQueue.map(\.songName)) == ["first", "last"])
+    }
+
     @Test func overlappingRequestsAreSerializedAndSeePreviousDuplicates() async throws {
         let fixture = try ImportFixture()
         let manager = fixture.manager()
@@ -248,6 +321,39 @@ struct LibraryImportTests {
         #expect(unrelated.title == "Do not roll this back")
         #expect(manager.importReport?.contains("Could not delete") == true)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.music.path) == ["track.mp3"])
+    }
+
+    @Test func deletingAnotherSongPreservesPausedPlayerAndPlayhead() throws {
+        let fixture = try ImportFixture()
+        let manager = fixture.manager()
+        defer { fixture.cleanup(manager) }
+        let selected = try fixture.seed("selected")
+        let deleted = try fixture.seed("deleted")
+        selected.locations = ["all"]
+        deleted.locations = ["all"]
+        try fixture.context.save()
+        for name in ["selected", "deleted"] {
+            try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
+        }
+        manager.reloadQueue(newContext: .all, shuffle: false, songs: [selected, deleted])
+        manager.seek(to: 3)
+        #expect(manager.deleteImportedSong(deleted, modelContext: fixture.context))
+        #expect(manager.currentSong?.songName == "selected")
+        #expect(abs(manager.currentTime - 3) < 0.01)
+        #expect(manager.isPaused)
+        #expect(manager.songQueue.map(\.songName) == ["selected"])
+    }
+
+    @Test func deletingAnAlreadyMissingFileStillRemovesTheStoredSong() throws {
+        let fixture = try ImportFixture()
+        let manager = fixture.manager()
+        defer { fixture.cleanup(manager) }
+        let selected = try fixture.seed()
+        #expect(manager.deleteImportedSong(selected, modelContext: fixture.context))
+        #expect(try fixture.storedSongs().isEmpty)
+        #expect(manager.songQueue.isEmpty)
+        #expect(manager.currentSong == nil)
+        #expect(manager.isPaused)
     }
 
     @Test func bundledOnlyRecordsCannotBeDeletedByImportDeletion() throws {

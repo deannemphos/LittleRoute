@@ -11,13 +11,19 @@ final class LocationHandler: NSObject, @preconcurrency CLLocationManagerDelegate
     @ObservationIgnored private var search: MKLocalSearch?
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var lastAccepted: Date?
+    @ObservationIgnored private let automaticallyStarts: Bool
     var authorizationStatus: CLAuthorizationStatus?
     var currentLocation: CLLocation?
     var locationMessage: String?
     var hasReducedAccuracy = false
     @ObservationIgnored var onLocationUpdate: ((CLLocation) -> Void)?
 
-    override init() {
+    override convenience init() {
+        self.init(automaticallyStarts: true)
+    }
+
+    init(automaticallyStarts: Bool) {
+        self.automaticallyStarts = automaticallyStarts
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
@@ -38,6 +44,7 @@ final class LocationHandler: NSObject, @preconcurrency CLLocationManagerDelegate
     }
 
     func startLocationUpdates() {
+        guard automaticallyStarts else { return }
         guard manager.authorizationStatus == .authorizedAlways ||
                 manager.authorizationStatus == .authorizedWhenInUse else { return }
         manager.startUpdatingLocation()

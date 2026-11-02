@@ -239,7 +239,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         settleQueue(keepCurrentSong: keepCurrentSong, autoplay: wasPlaying)
     }
 
-    private func settleQueue(keepCurrentSong: Bool, autoplay: Bool) {
+    private func settleQueue(keepCurrentSong: Bool, autoplay: Bool, reloadCurrentSong: Bool = false) {
         guard !songQueue.isEmpty else {
             clearPlayer()
             playbackError = nil
@@ -247,6 +247,10 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             return
         }
         if keepCurrentSong, let index = matchingCurrentIndex() {
+            if reloadCurrentSong {
+                if loadSong(at: index), autoplay { playLoadedSong() }
+                return
+            }
             currentIndex = index
             currentSong = songQueue[index]
             if autoplay && isPaused { playLoadedSong() }
@@ -666,8 +670,14 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             }
             if summary.imported + summary.replaced > 0 {
                 let songs = try writer.fetch(FetchDescriptor<Song>())
-                reloadQueue(newContext: currentContext, shuffle: isShuffled, songs: songs,
-                            keepCurrentSong: !changedFiles.contains(loadedSongName ?? ""))
+                let reloadCurrentSong = changedFiles.contains(loadedSongName ?? "")
+                let wasPlaying = !isPaused
+                cancelTransition()
+                resolveQueue(context: currentContext, shuffle: isShuffled, songs: songs)
+                // Replacing the loaded file needs a new player, not a jump to
+                // the first song in a freshly fetched (possibly shuffled) queue.
+                settleQueue(keepCurrentSong: true, autoplay: wasPlaying,
+                            reloadCurrentSong: reloadCurrentSong)
             }
         } catch {
             summary.failures.append("Library could not be read or updated: \(error.localizedDescription). Import stopped; review the item results and reopen LittleRoute before retrying.")

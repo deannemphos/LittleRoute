@@ -59,6 +59,10 @@ struct ContextStatusView: View {
         VStack(spacing: 6) {
             Text(contextDetector.status).font(.callout.weight(.semibold))
                 .accessibilityIdentifier("contextStatus")
+            if let geographic = contextDetector.geographicContext {
+                Text("Area: \(geographic.displayName) / Music: \(audioManager.currentContext.displayName)")
+                    .font(.caption)
+            }
             if contextDetector.musicReason != "Location" {
                 Text("Music reason: \(contextDetector.musicReason)").font(.caption)
             }

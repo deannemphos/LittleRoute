@@ -104,7 +104,8 @@ struct ContentView: View {
                 .lineLimit(1).minimumScaleFactor(0.6)
                 .foregroundStyle(theme.titleStyle)
                 .accessibilityAddTraits(.isHeader)
-            ContextRingView(context: audioManager.currentContext, diameter: 24, color: audioManager.currentContext.tintColor)
+            ContextRingView(context: audioManager.currentContext, diameter: 24,
+                            color: audioManager.currentContext.tintColor, isPlaying: !audioManager.isPaused)
             Text(audioManager.currentContext.displayName)
                 .themedFont(.contextLabel, theme: theme)
                 .foregroundStyle(theme.secondaryText)
