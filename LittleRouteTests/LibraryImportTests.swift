@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AVFoundation
 import SwiftData
 @testable import LittleRoute
 
@@ -24,7 +25,7 @@ private struct ImportFixture {
         try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
     }
 
-    func source(_ name: String, data: Data = PlaybackAudioFixture.wav()) throws -> URL {
+    func source(_ name: String, data: Data = PlaybackAudioFixture.mp3()) throws -> URL {
         let url = sources.appendingPathComponent(name)
         try data.write(to: url)
         return url
@@ -51,8 +52,8 @@ private struct ImportFixture {
 
     func manager(failingSave: Bool = false, beforeSave: (() -> Void)? = nil) -> AudioPlayerManager {
         AudioPlayerManager(musicDirectory: music, managesSystemAudio: false, saveChanges: { writer in
-            if failingSave { throw CocoaError(.fileWriteNoPermission) }
             beforeSave?()
+            if failingSave { throw CocoaError(.fileWriteNoPermission) }
             try writer.save()
         })
     }
@@ -61,12 +62,28 @@ private struct ImportFixture {
 @MainActor
 @Suite(.serialized)
 struct LibraryImportTests {
+    @Test func generatedMP3FixtureDecodesWithFileAndAssetAPIs() async throws {
+        let fixture = try ImportFixture()
+        let manager = fixture.manager()
+        defer { fixture.cleanup(manager) }
+        let source = try fixture.source("silence.mp3")
+        let player = try AVAudioPlayer(contentsOf: source)
+        #expect(player.prepareToPlay())
+        #expect(player.duration > 7.9 && player.duration < 8.1)
+        let asset = AVURLAsset(url: source)
+        #expect(try await asset.load(.isPlayable))
+        let duration = try await asset.load(.duration)
+        #expect(duration.seconds > 7.9 && duration.seconds < 8.1)
+    }
+
     @Test func importsValidAudioAndPreservesEmbeddedMP3InBasename() async throws {
         let fixture = try ImportFixture()
         let manager = fixture.manager()
         defer { fixture.cleanup(manager) }
         let source = try fixture.source("mix.mp3.edit.MP3")
         await manager.importSongs(from: [source], modelContext: fixture.context)
+        try #require(manager.importReport?.contains("1 imported") == true,
+                     "\(manager.importReport ?? "No import report")")
         let song = try #require(try fixture.storedSongs().first)
         #expect(song.songName == "mix.mp3.edit")
         #expect(song.isImported)
@@ -86,11 +103,11 @@ struct LibraryImportTests {
         let manager = fixture.manager()
         defer { fixture.cleanup(manager) }
         let song = try fixture.seed()
-        let original = PlaybackAudioFixture.wav()
+        let original = PlaybackAudioFixture.mp3()
         let destination = fixture.music.appendingPathComponent("track.mp3")
         try original.write(to: destination)
         song.title = "An unrelated unsaved edit"
-        let source = try fixture.source("track.mp3", data: PlaybackAudioFixture.wav(seconds: 2))
+        let source = try fixture.source("track.mp3", data: PlaybackAudioFixture.mp3(seconds: 2))
         await manager.importSongs(from: [source], modelContext: fixture.context)
         #expect(try Data(contentsOf: destination) == original)
         let stored = try #require(try fixture.storedSongs().first)
@@ -106,10 +123,12 @@ struct LibraryImportTests {
         defer { fixture.cleanup(manager) }
         _ = try fixture.seed()
         let destination = fixture.music.appendingPathComponent("track.mp3")
-        try PlaybackAudioFixture.wav().write(to: destination)
-        let replacement = PlaybackAudioFixture.wav(seconds: 2)
+        try PlaybackAudioFixture.mp3().write(to: destination)
+        let replacement = PlaybackAudioFixture.mp3(seconds: 2)
         let source = try fixture.source("track.mp3", data: replacement)
         await manager.importSongs(from: [source], modelContext: fixture.context, replacingExisting: true)
+        try #require(manager.importReport?.contains("1 replaced/repaired") == true,
+                     "\(manager.importReport ?? "No import report")")
         #expect(try Data(contentsOf: destination) == replacement)
         #expect(try fixture.storedSongs().count == 1)
         #expect(try fixture.storedSongs().first?.locations == ["gym", "legacy-tag"])
@@ -127,12 +146,12 @@ struct LibraryImportTests {
         selected.locations = ["all"]
         try fixture.context.save()
         for name in ["first", "selected"] {
-            try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
+            try PlaybackAudioFixture.mp3().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
         }
         manager.reloadQueue(newContext: .all, shuffle: false, songs: [first, selected])
         manager.play(song: selected)
         manager.seek(to: 3)
-        let source = try fixture.source("selected.mp3", data: PlaybackAudioFixture.wav(seconds: 2))
+        let source = try fixture.source("selected.mp3", data: PlaybackAudioFixture.mp3(seconds: 2))
         await manager.importSongs(from: [source], modelContext: fixture.context, replacingExisting: true)
         #expect(manager.currentSong?.songName == "selected")
         #expect(manager.songLength > 1.9 && manager.songLength < 2.1)
@@ -149,10 +168,12 @@ struct LibraryImportTests {
         let selected = try fixture.seed("selected")
         selected.locations = ["all"]
         try fixture.context.save()
-        try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("selected.mp3"))
+        try PlaybackAudioFixture.mp3().write(to: fixture.music.appendingPathComponent("selected.mp3"))
         manager.reloadQueue(newContext: .all, shuffle: false, songs: [selected])
         manager.musicPlayPause()
         manager.seek(to: 3)
+        let seekTime = manager.currentTime
+        #expect(abs(seekTime - 3) < 0.05)
         let source = try fixture.source("new.mp3")
         var pausedTime: TimeInterval = 0
         pauseBeforeCommit = {
@@ -162,7 +183,7 @@ struct LibraryImportTests {
         await manager.importSongs(from: [source], modelContext: fixture.context)
         pauseBeforeCommit = nil
         #expect(manager.currentSong?.songName == "selected")
-        #expect(pausedTime >= 3)
+        #expect(pausedTime >= seekTime)
         #expect(abs(manager.currentTime - pausedTime) < 0.01)
         #expect(manager.isPaused)
         #expect(Set(manager.songQueue.map(\.songName)) == ["selected", "new"])
@@ -175,6 +196,8 @@ struct LibraryImportTests {
         _ = try fixture.seed(imported: false)
         let source = try fixture.source("track.mp3")
         await manager.importSongs(from: [source], modelContext: fixture.context)
+        try #require(manager.importReport?.contains("1 replaced/repaired") == true,
+                     "\(manager.importReport ?? "No import report")")
         let song = try #require(try fixture.storedSongs().first)
         #expect(song.isImported)
         #expect(song.locations == ["gym", "legacy-tag"])
@@ -188,7 +211,7 @@ struct LibraryImportTests {
         let manager = fixture.manager()
         defer { fixture.cleanup(manager) }
         _ = try fixture.seed()
-        let original = PlaybackAudioFixture.wav()
+        let original = PlaybackAudioFixture.mp3()
         let destination = fixture.music.appendingPathComponent("track.mp3")
         try original.write(to: destination)
         let missing = fixture.sources.appendingPathComponent("track.mp3")
@@ -205,15 +228,17 @@ struct LibraryImportTests {
 
     @Test func failedReplacementSaveRestoresOriginalFileAndOnlyItsOwnModelChanges() async throws {
         let fixture = try ImportFixture()
-        let manager = fixture.manager(failingSave: true)
+        var attemptedSave = false
+        let manager = fixture.manager(failingSave: true, beforeSave: { attemptedSave = true })
         defer { fixture.cleanup(manager) }
         let song = try fixture.seed()
         song.title = "Keep this unrelated pending edit"
-        let original = PlaybackAudioFixture.wav()
+        let original = PlaybackAudioFixture.mp3()
         let destination = fixture.music.appendingPathComponent("track.mp3")
         try original.write(to: destination)
-        let source = try fixture.source("track.mp3", data: PlaybackAudioFixture.wav(seconds: 2))
+        let source = try fixture.source("track.mp3", data: PlaybackAudioFixture.mp3(seconds: 2))
         await manager.importSongs(from: [source], modelContext: fixture.context, replacingExisting: true)
+        #expect(attemptedSave, "\(manager.importReport ?? "No import report")")
         #expect(manager.importReport?.contains("1 failed") == true)
         #expect(manager.importReport?.contains("0 replaced/repaired") == true)
         #expect(try Data(contentsOf: destination) == original)
@@ -224,11 +249,13 @@ struct LibraryImportTests {
 
     @Test func failedNewSongSaveRemovesOnlyTheUncommittedCopy() async throws {
         let fixture = try ImportFixture()
-        let manager = fixture.manager(failingSave: true)
+        var attemptedSave = false
+        let manager = fixture.manager(failingSave: true, beforeSave: { attemptedSave = true })
         defer { fixture.cleanup(manager) }
         _ = try fixture.seed("unrelated")
         let source = try fixture.source("new.mp3")
         await manager.importSongs(from: [source], modelContext: fixture.context)
+        #expect(attemptedSave, "\(manager.importReport ?? "No import report")")
         #expect(manager.importReport?.contains("1 failed") == true)
         #expect(try fixture.storedSongs().map(\.songName) == ["unrelated"])
         #expect(!FileManager.default.fileExists(atPath: fixture.music.appendingPathComponent("new.mp3").path))
@@ -268,6 +295,8 @@ struct LibraryImportTests {
         }
         await first.value
         await second.value
+        try #require(manager.importReport?.contains("1 duplicates skipped") == true,
+                     "\(manager.importReport ?? "No import report")")
         #expect(try fixture.storedSongs().count == 1)
         #expect(manager.importReport?.contains("1 duplicates skipped") == true)
         #expect(!manager.isImporting)
@@ -295,8 +324,8 @@ struct LibraryImportTests {
         try fixture.context.save()
         let selectedFile = fixture.music.appendingPathComponent("selected.mp3")
         let otherFile = fixture.music.appendingPathComponent("other.mp3")
-        try PlaybackAudioFixture.wav().write(to: selectedFile)
-        try PlaybackAudioFixture.wav().write(to: otherFile)
+        try PlaybackAudioFixture.mp3().write(to: selectedFile)
+        try PlaybackAudioFixture.mp3().write(to: otherFile)
         #expect(manager.deleteImportedSong(selected, modelContext: fixture.context))
         #expect(try fixture.storedSongs().map(\.songName) == ["other"])
         #expect(!FileManager.default.fileExists(atPath: selectedFile.path))
@@ -313,7 +342,7 @@ struct LibraryImportTests {
         let unrelated = try fixture.seed("unrelated")
         unrelated.title = "Do not roll this back"
         let file = fixture.music.appendingPathComponent("track.mp3")
-        let audio = PlaybackAudioFixture.wav()
+        let audio = PlaybackAudioFixture.mp3()
         try audio.write(to: file)
         #expect(!manager.deleteImportedSong(selected, modelContext: fixture.context))
         #expect(try fixture.storedSongs().count == 2)
@@ -333,13 +362,15 @@ struct LibraryImportTests {
         deleted.locations = ["all"]
         try fixture.context.save()
         for name in ["selected", "deleted"] {
-            try PlaybackAudioFixture.wav().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
+            try PlaybackAudioFixture.mp3().write(to: fixture.music.appendingPathComponent("\(name).mp3"))
         }
         manager.reloadQueue(newContext: .all, shuffle: false, songs: [selected, deleted])
         manager.seek(to: 3)
+        let pausedTime = manager.currentTime
+        #expect(abs(pausedTime - 3) < 0.05)
         #expect(manager.deleteImportedSong(deleted, modelContext: fixture.context))
         #expect(manager.currentSong?.songName == "selected")
-        #expect(abs(manager.currentTime - 3) < 0.01)
+        #expect(abs(manager.currentTime - pausedTime) < 0.01)
         #expect(manager.isPaused)
         #expect(manager.songQueue.map(\.songName) == ["selected"])
     }

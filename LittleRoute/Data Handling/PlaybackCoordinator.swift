@@ -41,13 +41,15 @@ final class PlaybackCoordinator {
     private func apply(_ context: MusicContext) {
         guard !storeHealth.isDegraded else { return }
         do {
-            let songs = try orderedSongs(in: ModelContext(modelContext.container))
-            audio.switchContext(to: context, songs: songs)
+            let library = ModelContext(modelContext.container)
+            try withExtendedLifetime(library) {
+                let songs = try orderedSongs(in: library)
+                audio.switchContext(to: context, songs: songs)
+            }
         } catch {
             audio.reportPlaybackError("The new context's music could not be loaded. Keeping the current music.")
             Log.library.error("Context transition could not read the library")
         }
-
     }
 
     private func orderedSongs(in context: ModelContext) throws -> [Song] {

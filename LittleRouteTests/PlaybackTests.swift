@@ -5,6 +5,17 @@ import SwiftData
 @testable import LittleRoute
 
 enum PlaybackAudioFixture {
+    static func mp3(seconds: Int = 8) -> Data {
+        // MPEG-1 Layer III, 32 kbps, 44.1 kHz mono. Zero side/main data
+        // encodes silent granules without a bit reservoir or external assets.
+        var frame = Data([0xff, 0xfb, 0x10, 0xc4])
+        frame.append(Data(repeating: 0, count: 100))
+        let frameCount = (44_100 * seconds + 1_151) / 1_152
+        var data = Data()
+        for _ in 0..<frameCount { data.append(frame) }
+        return data
+    }
+
     static func wav(seconds: Int = 8, sample: Int16 = 0) -> Data {
         let samples = 8_000 * seconds
         var data = Data()
@@ -53,6 +64,67 @@ struct PlaybackTests {
 
     private func stop(_ manager: AudioPlayerManager) {
         manager.reloadQueue(newContext: .all, shuffle: false, songs: [])
+    }
+
+    private func withFetchedSongs(in container: ModelContainer,
+                                  _ use: ([Song], ModelContext) -> Void) throws {
+        let reader = ModelContext(container)
+        reader.autosaveEnabled = false
+        let songs = try reader.fetch(FetchDescriptor<Song>())
+        withExtendedLifetime(reader) { use(songs, reader) }
+    }
+
+    @Test func queueContextsSurviveFadesAndReleaseSupersededLibraries() async throws {
+        let container = try ModelContainer(for: Song.self,
+                                          configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let writer = ModelContext(container)
+        writer.autosaveEnabled = false
+        for song in [song("a"), song("b", contexts: [.beach]), song("c", contexts: [.gym])] {
+            writer.insert(song)
+        }
+        try writer.save()
+        let manager = manager()
+        defer { stop(manager) }
+        weak var outgoing: ModelContext?
+        try withFetchedSongs(in: container) { songs, reader in
+            outgoing = reader
+            manager.reloadQueue(newContext: .all, shuffle: false, songs: songs)
+        }
+        #expect(outgoing != nil)
+        manager.musicPlayPause()
+
+        weak var superseded: ModelContext?
+        try withFetchedSongs(in: container) { songs, reader in
+            superseded = reader
+            manager.switchContext(to: .beach, songs: songs, fadeDuration: 0.1)
+        }
+        #expect(outgoing != nil)
+        #expect(superseded != nil)
+
+        weak var incoming: ModelContext?
+        try withFetchedSongs(in: container) { songs, reader in
+            incoming = reader
+            manager.switchContext(to: .gym, songs: songs, fadeDuration: 0.02)
+        }
+        #expect(superseded == nil)
+        #expect(outgoing != nil)
+        #expect(incoming != nil)
+        for _ in 0..<100 where manager.currentSong?.songName != "c" {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(manager.currentSong?.songName == "c")
+        #expect(outgoing == nil)
+        #expect(incoming != nil)
+
+        weak var matching: ModelContext?
+        try withFetchedSongs(in: container) { songs, reader in
+            matching = reader
+            manager.switchContext(to: .gym, songs: songs)
+        }
+        #expect(incoming == nil)
+        #expect(matching != nil)
+        stop(manager)
+        #expect(matching == nil)
     }
 
     @Test func exactContextExcludesAllFallbackAndKeepsCallerOrder() {

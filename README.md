@@ -36,7 +36,8 @@ nearest-place Voronoi map. Rendering and geographic lookup share the same bounde
 10 m sampled score mesh, including holes and disconnected regions. These are
 approximate listening areas inferred from MapKit POIs, not property boundaries.
 MapKit may omit places. Ground outside the loaded core is unknown, not a confirmed
-Traveling zone.
+Traveling zone. Sub-mesh islands may be missed; synthetic reference fixtures are
+checked outside a 20 m boundary-ambiguity band.
 
 **Stable mode is the default.** Crossing an outline does not immediately change
 music. Automatic changes require:
@@ -84,6 +85,11 @@ queue/fade races using generated valid audio, import/delete recovery, on-disk
 migration and view-independent playback coordination. Debug UI fixtures use
 synthetic places without live location/weather requests. CI captures the expanded
 map in its test result bundle.
+
+V3 and V4 have identical stored shapes. The migration plan intentionally uses one
+shared shape for both rather than attempting an equal-model migration, and
+normalizes legacy tags before applying V5's name uniqueness constraint. Frozen
+schemas and stored context keys are preserved.
 
 Geometry and transition helpers can also compile without Apple frameworks; that
 does not validate the iOS app. Simulator builds/tests do not establish device

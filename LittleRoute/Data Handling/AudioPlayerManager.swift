@@ -22,6 +22,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     public private(set) var importProgress: Double = 0
 
     @ObservationIgnored private var orderedQueue: [Song] = []
+    @ObservationIgnored private var retainedModelContexts: [ObjectIdentifier: ModelContext] = [:]
     @ObservationIgnored private var audioPlayer: AVAudioPlayer?
     @ObservationIgnored private var loadedSongName: String?
     @ObservationIgnored private var loadedSource: Bool?
@@ -215,13 +216,27 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     }
 
     private func resolveQueue(context: MusicContext, shuffle: Bool, songs: [Song]) {
-        currentContext = context
-        isShuffled = shuffle
-        let exact = songs.filter { $0.isTagged(context) }
-        queueSource = exact.isEmpty ? .all : context
-        orderedQueue = exact.isEmpty ? songs.filter { $0.isTagged(.all) } : exact
-        songQueue = shuffle ? orderedQueue.shuffled() : orderedQueue
-        currentIndex = matchingCurrentIndex()
+        withExtendedLifetime(songs.compactMap(\.modelContext)) {
+            currentContext = context
+            isShuffled = shuffle
+            let exact = songs.filter { $0.isTagged(context) }
+            queueSource = exact.isEmpty ? .all : context
+            orderedQueue = exact.isEmpty ? songs.filter { $0.isTagged(.all) } : exact
+            songQueue = shuffle ? orderedQueue.shuffled() : orderedQueue
+            refreshRetainedModelContexts()
+            currentIndex = matchingCurrentIndex()
+        }
+    }
+
+    private func refreshRetainedModelContexts() {
+        var contexts: [ObjectIdentifier: ModelContext] = [:]
+        // The outgoing track can still be active while a different queue fades in.
+        for song in songQueue + orderedQueue + (currentSong.map { [$0] } ?? []) {
+            if let context = song.modelContext {
+                contexts[ObjectIdentifier(context)] = context
+            }
+        }
+        retainedModelContexts = contexts
     }
 
     private func matchingCurrentIndex() -> Int? {
@@ -253,6 +268,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             }
             currentIndex = index
             currentSong = songQueue[index]
+            refreshRetainedModelContexts()
             if autoplay && isPaused { playLoadedSong() }
             updateNowPlayingInfo()
             return
@@ -411,6 +427,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             prepared.delegate = self
             audioPlayer = prepared
             currentSong = song
+            refreshRetainedModelContexts()
             loadedSongName = song.songName
             loadedSource = song.isImported
             currentIndex = index
@@ -436,6 +453,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         loadedSongName = nil
         loadedSource = nil
         currentSong = nil
+        refreshRetainedModelContexts()
         currentIndex = nil
         isPaused = true
         currentTime = 0
