@@ -135,7 +135,7 @@ struct LittleRouteApp: App {
 
         do {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--ui-testing") {
+            if PlaybackCoordinator.isTesting {
                 let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
                 let container = try ModelContainer(for: schema, configurations: [configuration])
                 let health: ModelStoreHealth = ProcessInfo.processInfo.arguments.contains("--store-unavailable")

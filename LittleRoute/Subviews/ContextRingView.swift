@@ -14,8 +14,15 @@ struct ContextRingView: View {
     let diameter: CGFloat
     var color: Color
 
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isVisible = false
     @State private var spinning = false
     @State private var bouncing = false
+
+    private var shouldAnimate: Bool {
+        isVisible && scenePhase == .active && !reduceMotion
+    }
 
     var body: some View {
         Circle()
@@ -25,20 +32,37 @@ struct ContextRingView: View {
             )
             .frame(width: diameter, height: diameter)
             .rotationEffect(.degrees(spinning ? 360 : 0))
-            .scaleEffect(bouncing ? 1.04 : 0.97)
+            .scaleEffect(reduceMotion ? 1 : (bouncing ? 1.04 : 0.97))
             .shadow(color: color.opacity(0.5), radius: 6)
-            .animation(.easeInOut(duration: 0.6), value: context)
-            .onAppear {
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    spinning = true
-                }
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    bouncing = true
-                }
+            .animation(shouldAnimate ? .easeInOut(duration: 0.6) : nil, value: context)
+            .onAppear { isVisible = true }
+            .onScrollVisibilityChange(threshold: 0.1) { isVisible = $0 }
+            .onChange(of: shouldAnimate) { _, animate in
+                if animate { startAnimations() } else { stopAnimations() }
+            }
+            .onDisappear {
+                isVisible = false
+                stopAnimations()
             }
             .allowsHitTesting(false)
             // purely ambient: the context it's tinted for is spoken by the label
             // right underneath it, so this would just be a stop with nothing to say
             .accessibilityHidden(true)
+    }
+
+    private func startAnimations() {
+        withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+            spinning = true
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+            bouncing = true
+        }
+    }
+
+    private func stopAnimations() {
+        withAnimation(nil) {
+            spinning = false
+            bouncing = false
+        }
     }
 }

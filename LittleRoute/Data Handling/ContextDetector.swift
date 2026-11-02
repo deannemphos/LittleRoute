@@ -23,11 +23,11 @@ final class ContextDetector {
     let debtAccumulationDuration: TimeInterval
     let switchBufferDuration: TimeInterval
     let maximumRestoreAge: TimeInterval
-    static let defaultDebtAccumulationDuration: TimeInterval = 480
-    static let debtAccumulationDefaultsKey = "contextDebtAccumulationDuration"
-    static let defaultMaximumRestoreAge: TimeInterval = 6 * 60 * 60
-    static let stateDefaultsKey = "contextDetectorState"
-    static let persistedStateVersion = 2
+    nonisolated static let defaultDebtAccumulationDuration: TimeInterval = 480
+    nonisolated static let debtAccumulationDefaultsKey = "contextDebtAccumulationDuration"
+    nonisolated static let defaultMaximumRestoreAge: TimeInterval = 6 * 60 * 60
+    nonisolated static let stateDefaultsKey = "contextDetectorState"
+    nonisolated static let persistedStateVersion = 2
     private let coreRadius: Double = 300
     private let cacheLifetime: TimeInterval = 600
 
@@ -273,11 +273,14 @@ final class ContextDetector {
             do {
                 let geometry = try await worker.value
                 guard let self, !Task.isCancelled, self.running, self.geometryGeneration == generation else { return }
-                let previous = self.lastValidLocation.flatMap { self.snapshot?.geometry.context(at: self.snapshot!.point(for: $0)) }
-                self.snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: self.now())
+                let previous = self.lastValidLocation.flatMap { location in
+                    self.snapshot.flatMap { $0.geometry.context(at: $0.point(for: location)) }
+                }
+                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: self.now())
+                self.snapshot = snapshot
                 self.zones = nearby
                 if let current = self.lastValidLocation, self.isUsable(current) {
-                    if previous != geometry.context(at: self.snapshot!.point(for: current)) {
+                    if previous != geometry.context(at: snapshot.point(for: current)) {
                         self.transition.resetCandidate()
                         self.lastProcessedFix = nil
                     }
@@ -310,8 +313,10 @@ final class ContextDetector {
 
         if !highSpeed {
             weatherProvider?.currentCondition(at: location) { [weak self] condition in
-                self?.latestWeather = condition
-                self?.weatherStatus = condition == nil ? "Weather unavailable; using location." : nil
+                guard let self, self.running, let current = self.lastValidLocation,
+                      current.distance(from: location) < 2_000 else { return }
+                self.latestWeather = condition
+                self.weatherStatus = condition == nil ? "Weather unavailable; using location." : nil
             }
         }
         var baseScores: [MusicContext: Double] = [:]

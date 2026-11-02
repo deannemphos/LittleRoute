@@ -60,6 +60,19 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         }
     }
 
+    deinit {
+        transitionTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    public func reportPlaybackError(_ message: String) {
+        playbackError = message
+    }
+
+    public func clearPlaybackError() {
+        playbackError = nil
+    }
+
     var progress: Double {
         guard songLength > 0 else { return 0 }
         return min(1, max(0, currentTime / songLength))
@@ -141,14 +154,14 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self, self.isPaused else { return }
                 self.musicPlayPause()
             }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.cancelTransition()
                 self.pauseLoadedSong()
@@ -156,15 +169,15 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async { self?.musicPlayPause() }
+            Task { @MainActor [weak self] in self?.musicPlayPause() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async { self?.skip() }
+            Task { @MainActor [weak self] in self?.skip() }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            DispatchQueue.main.async { self?.previous() }
+            Task { @MainActor [weak self] in self?.previous() }
             return .success
         }
         center.changePlaybackPositionCommand.isEnabled = true
@@ -172,7 +185,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
             guard let event = event as? MPChangePlaybackPositionCommandEvent,
                   event.positionTime.isFinite else { return .commandFailed }
             let position = event.positionTime
-            DispatchQueue.main.async { self?.seek(to: position) }
+            Task { @MainActor [weak self] in self?.seek(to: position) }
             return .success
         }
     }
@@ -350,7 +363,9 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     public func play(song: Song) {
         cancelTransition()
-        guard let index = songQueue.firstIndex(where: { $0.songName == song.songName }) else { return }
+        guard let index = songQueue.firstIndex(where: {
+            $0.songName == song.songName && $0.isImported == song.isImported
+        }) else { return }
         if loadSong(at: index) { playLoadedSong() }
     }
 
@@ -425,9 +440,11 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        DispatchQueue.main.async { [weak self, weak player] in
-            guard let self, let player, self.audioPlayer === player, !self.isPaused,
-                  !player.isPlaying, self.fadingOutPlayerID != ObjectIdentifier(player) else { return }
+        let playerID = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in
+            guard let self, let current = self.audioPlayer,
+                  ObjectIdentifier(current) == playerID, !self.isPaused,
+                  !current.isPlaying, self.fadingOutPlayerID != playerID else { return }
             if flag {
                 self.skip()
             } else {
@@ -439,9 +456,11 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     }
 
     nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let playerID = ObjectIdentifier(player)
         let message = error?.localizedDescription ?? "The audio file could not be decoded."
-        DispatchQueue.main.async { [weak self, weak player] in
-            guard let self, let player, self.audioPlayer === player else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let current = self.audioPlayer,
+                  ObjectIdentifier(current) == playerID else { return }
             self.cancelTransition()
             self.playbackError = "\(message) Reimport this song."
             self.pauseLoadedSong()
@@ -451,8 +470,12 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
     private func startPlaybackTimer() {
         stopPlaybackTimer()
         ticksSinceNowPlayingSync = 0
-        playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async {
+        playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            Task { @MainActor [weak self] in
                 guard let self, let player = self.audioPlayer else { return }
                 self.currentTime = player.currentTime
                 if !player.isPlaying {

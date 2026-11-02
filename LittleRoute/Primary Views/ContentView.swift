@@ -57,8 +57,12 @@ struct ContentView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
+            .accessibilityHidden(queueDrawerOpen)
+            .allowsHitTesting(!queueDrawerOpen)
             QueueDrawerView(audioManager: audioManager, isOpen: $queueDrawerOpen)
             topBar
+                .accessibilityHidden(queueDrawerOpen)
+                .allowsHitTesting(!queueDrawerOpen)
         }
         .safeAreaInset(edge: .bottom) {
             if storeHealth.isDegraded {
@@ -82,9 +86,9 @@ struct ContentView: View {
         }
         .alert("LittleRoute", isPresented: Binding(
             get: { audioManager.playbackError != nil || audioManager.importReport != nil },
-            set: { if !$0 { audioManager.playbackError = nil; audioManager.importReport = nil } }
+            set: { if !$0 { audioManager.clearPlaybackError(); audioManager.importReport = nil } }
         )) {
-            Button("OK") { audioManager.playbackError = nil; audioManager.importReport = nil }
+            Button("OK") { audioManager.clearPlaybackError(); audioManager.importReport = nil }
         } message: {
             Text(audioManager.playbackError ?? audioManager.importReport ?? "")
         }

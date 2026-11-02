@@ -27,13 +27,13 @@ final class PlaybackCoordinator {
         detector.start()
         guard !storeHealth.isDegraded else { return }
         do {
-            var songs = try modelContext.fetch(FetchDescriptor<Song>(sortBy: [SortDescriptor(\.title), SortDescriptor(\.songName)]))
+            var songs = try orderedSongs(in: modelContext)
             if songs.isEmpty { songs = audio.loadSongsFromBundle(modelContext: modelContext) }
             audio.currentContext = detector.confirmedContext
             audio.reloadQueue(newContext: detector.confirmedContext, shuffle: audio.isShuffled, songs: songs)
             audio.startPlaybackIfNothingElseIsPlaying()
         } catch {
-            audio.playbackError = "Your music library could not be read. Please reopen LittleRoute to retry."
+            audio.reportPlaybackError("Your music library could not be read. Please reopen LittleRoute to retry.")
             Log.library.error("Playback bootstrap could not read the library")
         }
     }
@@ -41,11 +41,19 @@ final class PlaybackCoordinator {
     private func apply(_ context: MusicContext) {
         guard !storeHealth.isDegraded else { return }
         do {
-            let songs = try modelContext.fetch(FetchDescriptor<Song>(sortBy: [SortDescriptor(\.title), SortDescriptor(\.songName)]))
+            let songs = try orderedSongs(in: ModelContext(modelContext.container))
             audio.switchContext(to: context, songs: songs)
         } catch {
-            audio.playbackError = "The new context's music could not be loaded. Keeping the current music."
+            audio.reportPlaybackError("The new context's music could not be loaded. Keeping the current music.")
             Log.library.error("Context transition could not read the library")
+        }
+
+    }
+
+    private func orderedSongs(in context: ModelContext) throws -> [Song] {
+        try context.fetch(FetchDescriptor<Song>()).sorted {
+            if $0.title == $1.title { return $0.songName < $1.songName }
+            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
     }
 

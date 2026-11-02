@@ -17,6 +17,16 @@ struct QueueDrawerView: View {
 
     @Binding var isOpen: Bool
     @GestureState private var dragOffset: CGFloat = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AccessibilityFocusState private var focusedControl: DrawerControl?
+
+    private enum DrawerControl: Hashable {
+        case tab, close
+    }
+
+    private var drawerAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)
+    }
 
     @AppStorage(AppTheme.storageKey) private var themeRaw = AppTheme.y2k.rawValue
     private var theme: AppTheme { AppTheme.current(from: themeRaw) }
@@ -28,12 +38,11 @@ struct QueueDrawerView: View {
     // Cap it against what the container actually offers instead.
     private static let preferredDrawerWidth: CGFloat = 370.0
     private static let uncoveredScreen: CGFloat = 44.0
-    private static let minDrawerWidth: CGFloat = 200.0
 
     private func drawerWidth(in availableWidth: CGFloat) -> CGFloat {
         min(
             Self.preferredDrawerWidth,
-            max(Self.minDrawerWidth, availableWidth - Self.uncoveredScreen)
+            max(0, availableWidth - Self.uncoveredScreen)
         )
     }
 
@@ -60,15 +69,26 @@ struct QueueDrawerView: View {
                 if isOpen {
                     Color.black.opacity(0.35)
                         .ignoresSafeArea()
-                        .onTapGesture { withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isOpen = false } }
+                        .onTapGesture { setDrawerOpen(false) }
                         // a full-screen unlabelled tap target is nothing but a trap in the
                         // rotor; the grab tab stays on screen while open and closes it too
                         .accessibilityHidden(true)
                 }
 
                 HStack(spacing: 0) {
-                    drawerContent
-                        .frame(width: width)
+                    Group {
+                        // Remove closed rows altogether so offscreen buttons cannot
+                        // receive keyboard focus or VoiceOver navigation.
+                        if isOpen || dragOffset > 0 {
+                            drawerContent
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(width: width)
+                    .accessibilityHidden(!isOpen)
+                    .allowsHitTesting(isOpen)
+                    .disabled(!isOpen)
 
                     // Thin chrome grab tab, always visible at the left edge
                     grabTab
@@ -80,10 +100,8 @@ struct QueueDrawerView: View {
                             state = value.translation.width
                         }
                         .onEnded { value in
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                if value.translation.width > 60 { isOpen = true }
-                                else if value.translation.width < -60 { isOpen = false }
-                            }
+                            if value.translation.width > 60 { setDrawerOpen(true) }
+                            else if value.translation.width < -60 { setDrawerOpen(false) }
                         }
                 )
             }
@@ -91,57 +109,73 @@ struct QueueDrawerView: View {
             // itself — that centring is what put the tab off screen on an SE
             .frame(width: proxy.size.width, alignment: .leading)
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isOpen)
+        .animation(drawerAnimation, value: isOpen)
+        .zIndex(isOpen ? 1 : 0)
+        .accessibilityAction(.escape) { setDrawerOpen(false) }
+        .onChange(of: isOpen) { _, open in
+            focusedControl = open ? .close : .tab
+        }
     }
 
     private var grabTab: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(theme == .y2k ? AnyShapeStyle(Y2K.chromeGradient) : AnyShapeStyle(Color(.secondarySystemBackground)))
-            .frame(width: tabWidth, height: tabHeight)
-            .overlay(
-                Image(systemName: "chevron.compact.right")
-                    .themedFont(.drawerGlyph, theme: theme)
-                    .foregroundStyle(theme == .y2k ? Y2K.chromeDark : Color.secondary)
-                    .rotationEffect(.degrees(isOpen ? 180 : 0))
-            )
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme == .y2k ? Color.white.opacity(0.7) : Color(.separator), lineWidth: 1))
-            .shadow(color: theme == .y2k ? .black.opacity(0.25) : .clear, radius: 3, x: 2)
-            .onTapGesture { toggleDrawer() }
-            // The drawer is otherwise reachable only by dragging, which VoiceOver takes
-            // over for its own gestures, so this 20pt tab is the entire non-visual entry
-            // point. Collapse the chevron (which announces as "chevron.compact.right")
-            // into one button-shaped element that says what it opens and how it's sitting.
-            //
-            // The action is spelled out rather than left to ride on the tap gesture above:
-            // a synthesized element's activation reaching a plain .onTapGesture is the
-            // under-specified path, and this is the only way in. Both routes call the same
-            // helper so they can't drift.
-            .accessibilityElement(children: .ignore)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("Song queue")
-            .accessibilityValue(isOpen ? "Open" : "Closed")
-            .accessibilityHint(isOpen ? "Closes the queue drawer." : "Opens the queue drawer.")
-            .accessibilityAction { toggleDrawer() }
+        Button {
+            setDrawerOpen(!isOpen)
+        } label: {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(theme == .y2k ? AnyShapeStyle(Y2K.chromeGradient) : AnyShapeStyle(Color(.secondarySystemBackground)))
+                .frame(width: tabWidth, height: tabHeight)
+                .overlay(
+                    Image(systemName: "chevron.compact.right")
+                        .themedFont(.drawerGlyph, theme: theme)
+                        .foregroundStyle(theme == .y2k ? Y2K.chromeDark : Color.secondary)
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                )
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme == .y2k ? Color.white.opacity(0.7) : Color(.separator), lineWidth: 1))
+                .shadow(color: theme == .y2k ? .black.opacity(0.25) : .clear, radius: 3, x: 2)
+                .frame(width: 44, height: max(44, tabHeight), alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Song queue")
+        .accessibilityValue(isOpen ? "Open" : "Closed")
+        .accessibilityHint(isOpen ? "Closes the queue drawer." : "Opens the queue drawer.")
+        .accessibilityFocused($focusedControl, equals: .tab)
     }
 
-    private func toggleDrawer() {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { isOpen.toggle() }
+    private func setDrawerOpen(_ open: Bool) {
+        withAnimation(drawerAnimation) { isOpen = open }
     }
 
     private var drawerContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(theme == .y2k ? "☆ UP NEXT ☆" : "Up Next")
-                .themedFont(.sectionHeader, theme: theme)
-                .foregroundStyle(
-                    theme == .y2k
-                    ? AnyShapeStyle(LinearGradient(colors: [Y2K.pink, Y2K.purple], startPoint: .leading, endPoint: .trailing))
-                    : AnyShapeStyle(Color.primary)
-                )
-                .shadow(color: theme == .y2k ? .white.opacity(0.8) : .clear, radius: 1, y: 1)
-                .padding()
-                // same story as the context label: the y2k stars are spoken aloud
-                .accessibilityLabel("Up next")
-                .accessibilityAddTraits(.isHeader)
+            HStack {
+                Text(theme == .y2k ? "☆ UP NEXT ☆" : "Up Next")
+                    .themedFont(.sectionHeader, theme: theme)
+                    .foregroundStyle(
+                        theme == .y2k
+                        ? AnyShapeStyle(LinearGradient(colors: [Y2K.pink, Y2K.purple], startPoint: .leading, endPoint: .trailing))
+                        : AnyShapeStyle(Color.primary)
+                    )
+                    .shadow(color: theme == .y2k ? .white.opacity(0.8) : .clear, radius: 1, y: 1)
+                    .accessibilityLabel("Up next")
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
+                Button {
+                    setDrawerOpen(false)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(rowText)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close queue")
+                .accessibilityFocused($focusedControl, equals: .close)
+            }
+            .padding(.leading)
+            .padding(.trailing, 4)
+            .padding(.vertical, 8)
 
             ScrollView {
                 LazyVStack(spacing: 8) {
@@ -165,6 +199,7 @@ struct QueueDrawerView: View {
                 } else {
                     Color(.systemBackground)
                 }
+                .ignoresSafeArea(edges: .vertical)
             }
         )
         .overlay(
@@ -173,7 +208,7 @@ struct QueueDrawerView: View {
                 .frame(width: theme == .y2k ? 3 : 1),
             alignment: .trailing
         )
-        .ignoresSafeArea(edges: .vertical)
+        .accessibilityAddTraits(.isModal)
     }
 
     private func queueRow(_ song: Song) -> some View {
@@ -204,6 +239,7 @@ struct QueueDrawerView: View {
                 }
             }
             .padding(10)
+            .frame(minHeight: 44)
             .background(
                 Capsule()
                     .fill(
