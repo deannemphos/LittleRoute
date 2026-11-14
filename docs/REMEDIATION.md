@@ -1,5 +1,10 @@
 # LittleRoute Remediation Plan
 
+**Historical plan:** implementation and validation have progressed beyond this
+`contexts` review. Use the README and the update at the top of `HANDOFF.md` for
+current behavior and build/runtime status. The tasks below retain their original
+review context; they are not a list of still-open work.
+
 Thirty-one independently shippable tasks from the architecture and performance
 review of the `contexts` branch. Each is scoped to a single small PR and states
 its own acceptance criteria.

@@ -212,20 +212,10 @@ enum SongSchemaV3: VersionedSchema {
 // columns with no constraint on any of them, and says so in its own
 // transcription below rather than by pointing at a file that moves.
 //
-// ⚠ The shape being identical is the one thing about this version a Mac has to
-// confirm. SwiftData decides which stages to run by working out which version
-// the store on disk is already at, and two versions that describe the same
-// columns may well be indistinguishable to it — in which case a V3 store is
-// taken for a V4 one and the stage below never runs.
-//
-// That failure is survivable, which is why this is still the shape of the fix:
-// nothing is dropped or rewritten, so a store that misses the stage still holds
-// every original string and a later build can rewrite them. The user's symptom
-// would be tags that match nothing — an empty queue and unlit chips — not tags
-// that are gone. The alternative (renaming the column to force a shape
-// difference) trades that for the possibility of SwiftData inferring "drop one
-// property, add another" and destroying the array outright, which is not a trade
-// worth making from a machine that cannot run it once.
+// V3 and V4 have the same model checksum. A stage between them raises an
+// Objective-C exception ("current model reference and next model reference
+// cannot be equal"), not a catchable Swift error. The migration plan therefore
+// uses V4 as their shared shape and normalizes either tag format before V5.
 enum SongSchemaV4: VersionedSchema {
 
     static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
@@ -300,11 +290,11 @@ enum SongSchemaV5: VersionedSchema {
 enum SongMigrationPlan: SchemaMigrationPlan {
 
     static var schemas: [any VersionedSchema.Type] {
-        [SongSchemaV1.self, SongSchemaV2.self, SongSchemaV3.self, SongSchemaV4.self, SongSchemaV5.self]
+        [SongSchemaV1.self, SongSchemaV2.self, SongSchemaV4.self, SongSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
+        [migrateV1toV2, migrateV2toV4, migrateV4toV5]
     }
 
     // Dropping an entity is one of the changes SwiftData infers, so this is
@@ -328,27 +318,12 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // "No imported songs yet" — with no way back, since importSongs skips a name
     // it already has. The rows and the mp3s would still be there; the user would
     // have no reason to believe it.
-    static let migrateV2toV3 = MigrationStage.custom(
+    static let migrateV2toV4 = MigrationStage.custom(
         fromVersion: SongSchemaV2.self,
-        toVersion: SongSchemaV3.self,
-        willMigrate: nil,
-        didMigrate: { context in
-            Self.backfillIsImported(in: context)
-        }
-    )
-
-    // No shape change at all — see SongSchemaV4 for what that costs and why it
-    // is still the right shape of fix. .custom exists here purely for the
-    // didMigrate; there is nothing for SwiftData to infer.
-    //
-    // What moves is every row's `locations` array, from MusicContext display
-    // names to MusicContext storage keys.
-    static let migrateV3toV4 = MigrationStage.custom(
-        fromVersion: SongSchemaV3.self,
         toVersion: SongSchemaV4.self,
         willMigrate: nil,
         didMigrate: { context in
-            Self.rewriteLocationsAsContextKeys(in: context)
+            try Self.backfillIsImported(in: context)
         }
     )
 
@@ -373,7 +348,8 @@ enum SongMigrationPlan: SchemaMigrationPlan {
         fromVersion: SongSchemaV4.self,
         toVersion: SongSchemaV5.self,
         willMigrate: { context in
-            Self.collapseDuplicateSongNames(in: context)
+            try Self.rewriteLocationsAsContextKeys(in: context)
+            try Self.collapseDuplicateSongNames(in: context)
         },
         didMigrate: nil
     )
@@ -415,19 +391,9 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     //   answer is that it deletes duplicate *records* of one song and the song
     //   still plays afterwards.
     //
-    // Nothing here throws, and the reason is slightly different from the one on
-    // backfillIsImported. Throwing would fail the container open and land the
-    // user in LR-10's in-memory fallback, same as ever — but giving up quietly is
-    // strictly better here, because giving up still lets the constraint be
-    // attempted, and a store that had no duplicates in it migrates perfectly well
-    // even if this pass couldn't read it. Throwing would guarantee the bad
-    // outcome in order to report a problem that may not exist. Both failure paths
-    // log and carry on.
-    private static func collapseDuplicateSongNames(in context: ModelContext) {
-        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
-            Log.migration.error("songName dedup: could not read the songs, leaving any duplicates in place")
-            return
-        }
+    // Fail the migration rather than apply a constraint to unverified data.
+    private static func collapseDuplicateSongNames(in context: ModelContext) throws {
+        let songs = try context.fetch(FetchDescriptor<SongSchemaV4.Song>())
 
         // Grouped by name, with the names kept in the order the fetch handed
         // them over. A Dictionary alone would do the grouping, but iterating one
@@ -493,6 +459,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             Log.migration.notice("songName dedup: collapsed \(deleted, privacy: .public) duplicate row(s) across \(collidingNames, privacy: .public) name(s)")
         } catch {
             Log.migration.error("songName dedup: could not save, leaving \(deleted, privacy: .public) duplicate row(s) in place — the unique constraint may now refuse the migration: \(String(describing: error), privacy: .public)")
+            throw error
         }
     }
 
@@ -563,25 +530,9 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     //   "all", and two identical tags are worth exactly one. Order is preserved
     //   so nothing the user sees reshuffles.
     //
-    // Nothing here throws, for the reason spelled out on backfillIsImported: a
-    // didMigrate that throws fails the container open, and since LR-10 that
-    // lands the user in the in-memory fallback — an empty library and every edit
-    // discarded on quit. Leaving the tags un-rewritten is a bad afternoon;
-    // throwing is a lost library. Both failure paths log and give up.
-    //
-    // Fetches SongSchemaV4.Song rather than the live Song, and it used to say
-    // Song — the same correction LR-15 made to backfillIsImported, for the same
-    // reason and one version further along. This is a didMigrate, so it has
-    // already arrived: its context speaks V4's models, and the live class stopped
-    // being one of those the moment LR-16 froze V4 and gave it a transcription of
-    // its own. The two shapes are still identical today, so the old spelling
-    // would very likely have gone on working — which is exactly why it is worth
-    // changing now, while it is a rename and not a debugging session.
-    private static func rewriteLocationsAsContextKeys(in context: ModelContext) {
-        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV4.Song>()) else {
-            Log.migration.error("context key migration: could not read the migrated songs, leaving every tag in its old spelling")
-            return
-        }
+    // Runs before leaving the shared V3/V4 shape, so both tag formats normalize.
+    private static func rewriteLocationsAsContextKeys(in context: ModelContext) throws {
+        let songs = try context.fetch(FetchDescriptor<SongSchemaV4.Song>())
 
         var rewritten = 0
         var unrecognised: Set<String> = []
@@ -644,10 +595,11 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             Log.migration.notice("context key migration: rewrote tags on \(rewritten, privacy: .public) of \(songs.count, privacy: .public) songs")
         } catch {
             Log.migration.error("context key migration: could not save, leaving every tag in its old spelling: \(String(describing: error), privacy: .public)")
+            throw error
         }
     }
 
-    // MARK: - V2 → V3: the isImported backfill
+    // MARK: - V2 → V4: the isImported backfill
 
     // Recover the flag for rows written before it existed.
     //
@@ -665,25 +617,8 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // cost nothing we can measure — and being bit-for-bit the predicate we are
     // replacing is worth more here than the syscall.
     //
-    // Nothing in it throws. A didMigrate that throws fails the whole container
-    // open, and since LR-10 that lands the user in the in-memory fallback: an
-    // empty library and every edit discarded on quit. That is a far worse outcome
-    // than the flags staying at their default, which is merely the un-backfilled
-    // state we would have had anyway. So both failure paths log and give up.
-    //
-    // Fetches SongSchemaV3.Song rather than the live Song, which is a change
-    // LR-15 had to make when it froze V3: this stage's destination is V3, so the
-    // context it is handed speaks V3's models, and the live class stopped being
-    // one of them the moment V3 got its own transcription. The two shapes happen
-    // to be identical today — V3 → V4 moves no columns — so the old spelling
-    // would very likely still have worked, which is exactly the kind of luck not
-    // worth relying on. Naming the version the stage lands in is simply what the
-    // stage means.
-    private static func backfillIsImported(in context: ModelContext) {
-        guard let songs = try? context.fetch(FetchDescriptor<SongSchemaV3.Song>()) else {
-            Log.migration.error("isImported backfill: could not read the migrated songs, leaving every flag at its default")
-            return
-        }
+    private static func backfillIsImported(in context: ModelContext) throws {
+        let songs = try context.fetch(FetchDescriptor<SongSchemaV4.Song>())
 
         // resolved once; the accessor creates the directory if it's missing, and
         // there is no reason to ask it per song.
@@ -706,6 +641,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             Log.migration.notice("isImported backfill: flagged \(flagged, privacy: .public) of \(songs.count, privacy: .public) songs as imported")
         } catch {
             Log.migration.error("isImported backfill: could not save, leaving every flag at its default: \(String(describing: error), privacy: .public)")
+            throw error
         }
     }
 }

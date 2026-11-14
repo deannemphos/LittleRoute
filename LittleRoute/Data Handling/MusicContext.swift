@@ -27,7 +27,7 @@ import SwiftUI
 // string from the case name. Left to synthesis, renaming `gym` to `fitness`
 // would silently move the key too, which is the one edit this whole
 // arrangement exists to make impossible to do by accident.
-enum MusicContext: String {
+enum MusicContext: String, CaseIterable, Sendable {
     case all = "all"
     case gym = "gym"
     case restaurant = "restaurant"

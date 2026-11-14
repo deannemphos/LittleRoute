@@ -436,6 +436,7 @@ struct ContextClassifierTests {
 
 // Stands in for LocationHandler: no CLLocationManager, no authorization prompt,
 // no MKLocalSearch. The detector only ever asks for these two things.
+@MainActor
 private final class StubPOIProvider: POIProviding {
     var currentLocation: CLLocation?
     // the detector installs its evaluation hook here in start(); a real handler
@@ -453,7 +454,7 @@ private final class StubPOIProvider: POIProviding {
 
     func getPointsOfInterest(radius: CLLocationDistance,
                              filter: [MKPointOfInterestCategory]?,
-                             completion: @escaping (Result<[MKMapItem], Error>) -> Void) {
+                             completion: @escaping @MainActor (Result<[MKMapItem], Error>) -> Void) {
         searchCount += 1
         lastRequestedRadius = radius
         completion(searchResult)
@@ -508,7 +509,8 @@ private final class StubClock {
     func advance(_ interval: TimeInterval) { current = current.addingTimeInterval(interval) }
 }
 
-struct ContextDetectorTests {
+@MainActor
+final class ContextDetectorTests {
 
     // The detector's reference is weak, so whatever we pass has to be owned
     // somewhere. Swift Testing builds a fresh suite value per test, so this
@@ -522,6 +524,7 @@ struct ContextDetectorTests {
     // unaffected -- their `advance` still moves the only clock there is.
     private let clock = StubClock()
     private let store = StubStateStore()
+    private var activeDetector: ContextDetector?
 
     private func makeDetector(initial: MusicContext = .all) -> (ContextDetector, (TimeInterval) -> Void) {
         let detector = ContextDetector(
@@ -531,6 +534,10 @@ struct ContextDetectorTests {
             dwellDuration: 30,
             debtAccumulationDuration: 480, // pinned rather than read from the store, so the arithmetic below is fixed
             switchBufferDuration: 180,
+            minimumResidenceDuration: 0,
+            maximumEvidenceGap: 60,
+            minimumEvidenceSamples: 2,
+            varietyEnabled: true,
             store: store,
             weatherProvider: nil
         )
@@ -538,12 +545,21 @@ struct ContextDetectorTests {
         // suite value that happens to be holding it
         let clock = self.clock
         detector.now = { clock.current }
-        let advance: (TimeInterval) -> Void = { clock.advance($0) }
+        activeDetector = detector
+        let provider = poiProvider
+        let advance: (TimeInterval) -> Void = { interval in
+            clock.advance(interval)
+            if let previous = provider.currentLocation {
+                provider.currentLocation = CLLocation(coordinate: previous.coordinate, altitude: 0,
+                    horizontalAccuracy: 10, verticalAccuracy: 10, course: 0, speed: 0, timestamp: clock.current)
+            }
+        }
         return (detector, advance)
     }
 
     private func location(metersEast: Double) -> CLLocation {
-        CLLocation(latitude: 0, longitude: metersEast / 111_320)
+        CLLocation(coordinate: .init(latitude: 0, longitude: metersEast / 111_320), altitude: 0,
+                   horizontalAccuracy: 10, verticalAccuracy: 10, course: 0, speed: 0, timestamp: clock.current)
     }
 
     // The detector applies search results on the main queue, so let those
@@ -554,6 +570,7 @@ struct ContextDetectorTests {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async { continuation.resume() }
         }
+        await activeDetector?.waitForPendingGeometry()
     }
 
     // MARK: Lifecycle
@@ -687,7 +704,7 @@ struct ContextDetectorTests {
         detector.start()
         await settle()
 
-        #expect(poiProvider.lastRequestedRadius == ContextClassifier.searchRadius)
+        #expect(poiProvider.lastRequestedRadius == ContextClassifier.searchRadius + 450)
 
         detector.stop()
     }
