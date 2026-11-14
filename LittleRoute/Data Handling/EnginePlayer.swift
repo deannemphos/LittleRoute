@@ -4,7 +4,8 @@ import os
 
 /// The slice of AVAudioPlayer that AudioPlayerManager drives. AVAudioPlayer has
 /// no hook for an equalizer or a spectrum tap, so the app plays through
-/// EnginePlayer; the tests keep injecting real AVAudioPlayers.
+/// EnginePlayer; the manager tests keep injecting real AVAudioPlayers, and
+/// EnginePlayerTests cover the engine path with generated audio files.
 @MainActor
 protocol SongPlayer: AnyObject {
     var duration: TimeInterval { get }
