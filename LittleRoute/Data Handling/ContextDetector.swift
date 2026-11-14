@@ -158,7 +158,11 @@ final class ContextDetector {
             Log.context.error("Custom places could not be saved")
         }
         // Redraws the zones now; a switch still needs the usual stable evidence.
-        if running, let location = lastValidLocation { rebuildGeometry(around: location) }
+        // Only the last successful search's coverage is known, and only while
+        // it is fresh; otherwise the next search picks the change up.
+        guard running, let location = lastSearchLocation, let searchedAt = lastSearchSucceeded,
+              now().timeIntervalSince(searchedAt) < cacheLifetime else { return }
+        rebuildGeometry(around: location, searchedAt: searchedAt)
     }
 
     func start() {
@@ -255,13 +259,14 @@ final class ContextDetector {
                 self.searchFailures = 0
                 self.searchError = nil
                 self.lastSearchLocation = location
-                self.lastSearchSucceeded = self.now()
+                let searchedAt = self.now()
+                self.lastSearchSucceeded = searchedAt
                 let discovered = ContextClassifier.evaluate(places: places, userLocation: location).zones
-                self.cache.removeAll { self.now().timeIntervalSince($0.fetchedAt) >= self.cacheLifetime ||
+                self.cache.removeAll { searchedAt.timeIntervalSince($0.fetchedAt) >= self.cacheLifetime ||
                     location.distance(from: $0.location) > 3_000 }
-                self.cache.append(CachedRegion(location: location, fetchedAt: self.now(), zones: discovered))
+                self.cache.append(CachedRegion(location: location, fetchedAt: searchedAt, zones: discovered))
                 if self.cache.count > 9 { self.cache.removeFirst(self.cache.count - 9) }
-                self.rebuildGeometry(around: location)
+                self.rebuildGeometry(around: location, searchedAt: searchedAt)
             case .failure:
                 self.searchFailures += 1
                 self.nextSearchAttempt = self.now().addingTimeInterval(min(120, 10 * pow(2, Double(min(self.searchFailures - 1, 4)))))
@@ -271,7 +276,7 @@ final class ContextDetector {
         }
     }
 
-    private func rebuildGeometry(around location: CLLocation) {
+    private func rebuildGeometry(around location: CLLocation, searchedAt: Date) {
         if projection == nil || snapshot.map({ hypot($0.point(for: location).x, $0.point(for: location).y) > 5_000 }) == true {
             projection = ZoneProjection(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
         }
@@ -335,7 +340,8 @@ final class ContextDetector {
                 let previous = self.lastValidLocation.flatMap { location in
                     self.snapshot.flatMap { $0.geometry.context(at: $0.point(for: location)) }
                 }
-                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: self.now())
+                // The snapshot is only as fresh as the search behind it.
+                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: searchedAt)
                 self.snapshot = snapshot
                 self.zones = nearby
                 if let current = self.lastValidLocation, self.isUsable(current) {

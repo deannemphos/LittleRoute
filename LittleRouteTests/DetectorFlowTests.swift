@@ -208,6 +208,32 @@ final class DetectorFlowTests {
         #expect(self.detector().customPlaces == [weather])
     }
 
+    @Test func customPlaceWaitsForFreshSearchedCoverage() async throws {
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        // Nothing has been searched yet, so there is no coverage to redraw.
+        detector.addCustomPlace(home)
+        await detector.waitForPendingGeometry()
+        #expect(detector.snapshot == nil)
+        #expect(detector.zones.isEmpty)
+
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.snapshot?.generatedAt == Date(timeIntervalSince1970: 1_000))
+
+        // An expired search cannot lend its age to a replacement snapshot.
+        clock = Date(timeIntervalSince1970: 1_000 + 601)
+        detector.removeCustomPlace(id: home.id)
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.snapshot?.generatedAt == Date(timeIntervalSince1970: 1_000))
+        #expect(!detector.canSwitchNow)
+        detector.stop()
+    }
+
     @Test func visualizerBandsAndCustomPlaceValidation() throws {
         try FeatureChecks.run()
     }
