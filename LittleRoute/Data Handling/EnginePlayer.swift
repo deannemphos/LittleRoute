@@ -227,10 +227,12 @@ final class EnginePlayer: SongPlayer {
     }
 
     private func finished(schedule: Int) {
-        // An engine stopped by an interruption or route change retires the
-        // schedule too. Only reaching the end may advance the queue; the
-        // interruption and configuration handlers own the other cases.
-        guard schedule == scheduleID, isPlaying, duration - currentTime < 1 else { return }
+        // An interruption or route change stops the engine before its handler
+        // reaches the main queue, so a completion from that stop can arrive
+        // while the schedule is still current. Only a completion with the
+        // engine still running means the audio ran out; the interruption and
+        // configuration handlers own the other cases.
+        guard schedule == scheduleID, isPlaying, AudioGraph.shared.engine?.isRunning == true else { return }
         isPlaying = false
         lastTime = duration
         onFinish?(true)
