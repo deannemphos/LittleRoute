@@ -234,6 +234,33 @@ final class DetectorFlowTests {
         detector.stop()
     }
 
+    @Test func siteBudgetKeepsCustomPlacesAndNearestPOIs() async throws {
+        var parks: [MKMapItem] = []
+        for row in -9..<9 {
+            for column in -9..<9 {
+                let item = MKMapItem(placemark: MKPlacemark(coordinate:
+                    .init(latitude: Double(row) * 20 / 111_195, longitude: Double(column) * 20 / 111_195)))
+                item.name = "Park \(row),\(column)"
+                item.pointOfInterestCategory = .park
+                parks.append(item)
+            }
+        }
+        #expect(parks.count > ContextZoneGeometry.maximumSites)
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        detector.addCustomPlace(home)
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success(parks))
+        await detector.waitForPendingGeometry()
+        #expect(detector.searchError == nil)
+        #expect(detector.zones.count == ContextZoneGeometry.maximumSites)
+        #expect(detector.zones.contains { $0.name == "Home" })
+        #expect(detector.zones.contains { $0.name == "Park 0,0" })
+        #expect(!detector.zones.contains { $0.name == "Park -9,-9" })
+        detector.stop()
+    }
+
     @Test func visualizerBandsAndCustomPlaceValidation() throws {
         try FeatureChecks.run()
     }

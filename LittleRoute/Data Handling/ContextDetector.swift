@@ -306,11 +306,20 @@ final class ContextDetector {
                 score: max(0, 1 - distance / place.radius) * ContextClassifier.customSpecificity,
                 isCustom: true)
         }
-        let nearby = records.values.sorted { $0.id < $1.id }.filter { zone in
+        let covered = records.values.filter { zone in
             let point = projection.point(latitude: zone.coordinate.latitude, longitude: zone.coordinate.longitude)
             return abs(point.x - center.x) <= radius + zone.radius &&
                 abs(point.y - center.y) <= radius + zone.radius
         }
+        // The geometry has a fixed site budget. Custom places always fit; the
+        // nearest POIs fill whatever is left so the result is deterministic.
+        let ranked = covered.sorted { a, b in
+            if a.isCustom != b.isCustom { return a.isCustom }
+            let da = location.distance(from: CLLocation(latitude: a.coordinate.latitude, longitude: a.coordinate.longitude))
+            let db = location.distance(from: CLLocation(latitude: b.coordinate.latitude, longitude: b.coordinate.longitude))
+            return da != db ? da < db : a.id < b.id
+        }
+        let nearby = ranked.prefix(ContextZoneGeometry.maximumSites).sorted { $0.id < $1.id }
         let sites = nearby.compactMap { zone -> ContextZoneGeometry.Site? in
             // A POI zone's radius is already its profile's effective radius.
             guard let specificity = zone.isCustom ? ContextClassifier.customSpecificity
