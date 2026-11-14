@@ -111,6 +111,8 @@ extension MusicContext {
         case .city: return .blue
         case .rainy: return .indigo
         case .snowy: return .mint
+        case .home: return .yellow
+        case .work: return .teal
         default: return .gray
         }
     }
@@ -126,6 +128,8 @@ extension MusicContext {
         case .city: return "building.2.fill"
         case .rainy: return "cloud.rain.fill"
         case .snowy: return "snowflake"
+        case .home: return "house.fill"
+        case .work: return "briefcase.fill"
         default: return "mappin"
         }
     }

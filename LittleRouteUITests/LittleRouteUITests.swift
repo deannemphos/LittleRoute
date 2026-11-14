@@ -46,6 +46,23 @@ final class LittleRouteUITests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsOffersEqualizerAndCustomPlaces() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        let settings = app.buttons["openSettings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.sliders["60 Hz gain"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Places"].tap()
+        XCTAssertTrue(app.navigationBars["My Places"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["addCustomPlace"].exists)
+        app.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testDegradedStoreDisablesImportAndExplainsRecovery() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--store-unavailable"]

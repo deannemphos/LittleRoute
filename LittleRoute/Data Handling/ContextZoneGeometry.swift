@@ -67,6 +67,8 @@ struct ContextZoneGeometry: Sendable {
         return result
     }
 
+    static let maximumSites = 256
+
     static func build(sites: [Site], bounds requested: Bounds, spacing: Double = 10) throws -> Self {
         guard spacing.isFinite, spacing >= 2,
               [requested.minX, requested.minY, requested.maxX, requested.maxY].allSatisfy({ $0.isFinite && abs($0) < 1e9 }),
@@ -84,7 +86,7 @@ struct ContextZoneGeometry: Sendable {
         )
         let width = (bounds.maxX - bounds.minX) / spacing
         let height = (bounds.maxY - bounds.minY) / spacing
-        guard width <= 200, height <= 200, sites.count <= 256 else {
+        guard width <= 200, height <= 200, sites.count <= maximumSites else {
             throw GeometryError.capacityExceeded
         }
         let columns = Int(width)

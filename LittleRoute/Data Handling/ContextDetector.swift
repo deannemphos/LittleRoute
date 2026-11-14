@@ -28,6 +28,12 @@ final class ContextDetector {
     nonisolated static let defaultMaximumRestoreAge: TimeInterval = 6 * 60 * 60
     nonisolated static let stateDefaultsKey = "contextDetectorState"
     nonisolated static let persistedStateVersion = 2
+    nonisolated static let customPlacesDefaultsKey = "customPlaces"
+    // Weather and travel are modifiers, All is a tag, and the zone geometry
+    // reserves "traveling" for unclaimed ground: none of them can be a place.
+    nonisolated static let customPlaceContexts: [MusicContext] = MusicContext.allCases.filter {
+        !Set<MusicContext>([.all, .rainy, .snowy, .traveling, .driving]).contains($0)
+    }
     private let coreRadius: Double = 300
     private let cacheLifetime: TimeInterval = 600
 
@@ -47,6 +53,7 @@ final class ContextDetector {
     private(set) var boundaryDistance: Double?
     private(set) var bufferedContext: MusicContext?
     private(set) var bufferExpiry: Date?
+    private(set) var customPlaces: [CustomPlace] = []
     private var transition: ContextTransitionState
 
     var candidateContext: MusicContext? { transition.candidate.flatMap(MusicContext.init(storageKey:)) }
@@ -127,6 +134,35 @@ final class ContextDetector {
         self.weatherProvider = weatherProvider
         transition = ContextTransitionState(dwell: dwellDuration, residence: minimumResidenceDuration,
                                             maximumGap: maximumEvidenceGap, minimumSamples: minimumEvidenceSamples)
+        // Unlike the detector state above, these never expire with age.
+        if let data = store.data(forKey: Self.customPlacesDefaultsKey),
+           let places = try? JSONDecoder().decode([CustomPlace].self, from: data) {
+            customPlaces = places
+        }
+    }
+
+    func addCustomPlace(_ place: CustomPlace) {
+        customPlaces.append(place)
+        customPlacesChanged()
+    }
+
+    func removeCustomPlace(id: CustomPlace.ID) {
+        customPlaces.removeAll { $0.id == id }
+        customPlacesChanged()
+    }
+
+    private func customPlacesChanged() {
+        do {
+            store.set(try JSONEncoder().encode(customPlaces), forKey: Self.customPlacesDefaultsKey)
+        } catch {
+            Log.context.error("Custom places could not be saved")
+        }
+        // Redraws the zones now; a switch still needs the usual stable evidence.
+        // Only the last successful search's coverage is known, and only while
+        // it is fresh; otherwise the next search picks the change up.
+        guard running, let location = lastSearchLocation, let searchedAt = lastSearchSucceeded,
+              now().timeIntervalSince(searchedAt) < cacheLifetime else { return }
+        rebuildGeometry(around: location, searchedAt: searchedAt)
     }
 
     func start() {
@@ -223,13 +259,14 @@ final class ContextDetector {
                 self.searchFailures = 0
                 self.searchError = nil
                 self.lastSearchLocation = location
-                self.lastSearchSucceeded = self.now()
+                let searchedAt = self.now()
+                self.lastSearchSucceeded = searchedAt
                 let discovered = ContextClassifier.evaluate(places: places, userLocation: location).zones
-                self.cache.removeAll { self.now().timeIntervalSince($0.fetchedAt) >= self.cacheLifetime ||
+                self.cache.removeAll { searchedAt.timeIntervalSince($0.fetchedAt) >= self.cacheLifetime ||
                     location.distance(from: $0.location) > 3_000 }
-                self.cache.append(CachedRegion(location: location, fetchedAt: self.now(), zones: discovered))
+                self.cache.append(CachedRegion(location: location, fetchedAt: searchedAt, zones: discovered))
                 if self.cache.count > 9 { self.cache.removeFirst(self.cache.count - 9) }
-                self.rebuildGeometry(around: location)
+                self.rebuildGeometry(around: location, searchedAt: searchedAt)
             case .failure:
                 self.searchFailures += 1
                 self.nextSearchAttempt = self.now().addingTimeInterval(min(120, 10 * pow(2, Double(min(self.searchFailures - 1, 4)))))
@@ -239,7 +276,7 @@ final class ContextDetector {
         }
     }
 
-    private func rebuildGeometry(around location: CLLocation) {
+    private func rebuildGeometry(around location: CLLocation, searchedAt: Date) {
         if projection == nil || snapshot.map({ hypot($0.point(for: location).x, $0.point(for: location).y) > 5_000 }) == true {
             projection = ZoneProjection(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
         }
@@ -257,16 +294,39 @@ final class ContextDetector {
         for region in cache {
             for zone in region.zones { records[zone.id] = zone }
         }
-        let nearby = records.values.sorted { $0.id < $1.id }.filter { zone in
+        for place in customPlaces where place.isValid {
+            guard let context = MusicContext(storageKey: place.contextKey),
+                  Self.customPlaceContexts.contains(context) else { continue }
+            let distance = location.distance(from: CLLocation(latitude: place.latitude, longitude: place.longitude))
+            let id = "custom-\(place.id.uuidString)"
+            records[id] = ContextClassifier.Zone(
+                id: id, name: place.name,
+                coordinate: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude),
+                context: context, radius: place.radius,
+                score: max(0, 1 - distance / place.radius) * ContextClassifier.customSpecificity,
+                isCustom: true)
+        }
+        let covered = records.values.filter { zone in
             let point = projection.point(latitude: zone.coordinate.latitude, longitude: zone.coordinate.longitude)
             return abs(point.x - center.x) <= radius + zone.radius &&
                 abs(point.y - center.y) <= radius + zone.radius
         }
+        // The geometry has a fixed site budget. Custom places always fit; the
+        // nearest POIs fill whatever is left so the result is deterministic.
+        let ranked = covered.sorted { a, b in
+            if a.isCustom != b.isCustom { return a.isCustom }
+            let da = location.distance(from: CLLocation(latitude: a.coordinate.latitude, longitude: a.coordinate.longitude))
+            let db = location.distance(from: CLLocation(latitude: b.coordinate.latitude, longitude: b.coordinate.longitude))
+            return da != db ? da < db : a.id < b.id
+        }
+        let nearby = ranked.prefix(ContextZoneGeometry.maximumSites).sorted { $0.id < $1.id }
         let sites = nearby.compactMap { zone -> ContextZoneGeometry.Site? in
-            guard let profile = ContextClassifier.profile(for: zone.context) else { return nil }
+            // A POI zone's radius is already its profile's effective radius.
+            guard let specificity = zone.isCustom ? ContextClassifier.customSpecificity
+                    : ContextClassifier.profile(for: zone.context)?.specificity else { return nil }
             return .init(id: zone.id,
                          point: projection.point(latitude: zone.coordinate.latitude, longitude: zone.coordinate.longitude),
-                         context: zone.context.storageKey, radius: profile.effectiveRadius, specificity: profile.specificity)
+                         context: zone.context.storageKey, radius: zone.radius, specificity: specificity)
         }
         let bounds = ContextZoneGeometry.Bounds(minX: center.x - radius, minY: center.y - radius,
                                                 maxX: center.x + radius, maxY: center.y + radius)
@@ -289,7 +349,8 @@ final class ContextDetector {
                 let previous = self.lastValidLocation.flatMap { location in
                     self.snapshot.flatMap { $0.geometry.context(at: $0.point(for: location)) }
                 }
-                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: self.now())
+                // The snapshot is only as fresh as the search behind it.
+                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: searchedAt)
                 self.snapshot = snapshot
                 self.zones = nearby
                 if let current = self.lastValidLocation, self.isUsable(current) {

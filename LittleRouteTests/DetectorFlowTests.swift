@@ -175,6 +175,96 @@ final class DetectorFlowTests {
         detector.stop()
     }
 
+    @Test func customPlaceOwnsItsGroundPersistsAndStillNeedsDwell() async throws {
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .traveling)
+
+        detector.addCustomPlace(home)
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .home)
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.confirmedContext == .all)
+        #expect(provider.requests.count == 1)
+        for time in stride(from: 5.0, through: 25.0, by: 5) { deliver(time) }
+        #expect(detector.confirmedContext == .all)
+        deliver(30)
+        #expect(detector.confirmedContext == .home)
+
+        // A modifier or unknown tag in storage is ignored rather than drawn.
+        let weather = try #require(CustomPlace(name: "Sky", latitude: 0, longitude: 0, contextKey: "rainy"))
+        detector.addCustomPlace(weather)
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        detector.stop()
+
+        let restored = self.detector()
+        #expect(restored.customPlaces == [home, weather])
+        restored.removeCustomPlace(id: home.id)
+        #expect(self.detector().customPlaces == [weather])
+    }
+
+    @Test func customPlaceWaitsForFreshSearchedCoverage() async throws {
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        // Nothing has been searched yet, so there is no coverage to redraw.
+        detector.addCustomPlace(home)
+        await detector.waitForPendingGeometry()
+        #expect(detector.snapshot == nil)
+        #expect(detector.zones.isEmpty)
+
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.snapshot?.generatedAt == Date(timeIntervalSince1970: 1_000))
+
+        // An expired search cannot lend its age to a replacement snapshot.
+        clock = Date(timeIntervalSince1970: 1_000 + 601)
+        detector.removeCustomPlace(id: home.id)
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.snapshot?.generatedAt == Date(timeIntervalSince1970: 1_000))
+        #expect(!detector.canSwitchNow)
+        detector.stop()
+    }
+
+    @Test func siteBudgetKeepsCustomPlacesAndNearestPOIs() async throws {
+        var parks: [MKMapItem] = []
+        for row in -9..<9 {
+            for column in -9..<9 {
+                let item = MKMapItem(placemark: MKPlacemark(coordinate:
+                    .init(latitude: Double(row) * 20 / 111_195, longitude: Double(column) * 20 / 111_195)))
+                item.name = "Park \(row),\(column)"
+                item.pointOfInterestCategory = .park
+                parks.append(item)
+            }
+        }
+        #expect(parks.count > ContextZoneGeometry.maximumSites)
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        detector.addCustomPlace(home)
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success(parks))
+        await detector.waitForPendingGeometry()
+        #expect(detector.searchError == nil)
+        #expect(detector.zones.count == ContextZoneGeometry.maximumSites)
+        #expect(detector.zones.contains { $0.name == "Home" })
+        #expect(detector.zones.contains { $0.name == "Park 0,0" })
+        #expect(!detector.zones.contains { $0.name == "Park -9,-9" })
+        detector.stop()
+    }
+
+    @Test func visualizerBandsAndCustomPlaceValidation() throws {
+        try FeatureChecks.run()
+    }
+
     @Test func projectionWrapsAntimeridianAndRoundTripsHighLatitudes() {
         for latitude in [0.0, 60, 84] {
             let projection = ZoneProjection(latitude: latitude, longitude: 179.999)

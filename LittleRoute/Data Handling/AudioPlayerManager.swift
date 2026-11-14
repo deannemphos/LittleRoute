@@ -23,7 +23,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     @ObservationIgnored private var orderedQueue: [Song] = []
     @ObservationIgnored private var retainedModelContexts: [ObjectIdentifier: ModelContext] = [:]
-    @ObservationIgnored private var audioPlayer: AVAudioPlayer?
+    @ObservationIgnored private var audioPlayer: (any SongPlayer)?
     @ObservationIgnored private var loadedSongName: String?
     @ObservationIgnored private var loadedSource: Bool?
     @ObservationIgnored private var currentIndex: Int?
@@ -411,20 +411,25 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
         guard songQueue.indices.contains(index) else { return false }
         let song = songQueue[index]
         do {
-            let prepared: AVAudioPlayer
+            let prepared: any SongPlayer
             if let playerFactory {
                 prepared = try playerFactory(song)
             } else {
                 guard let url = Self.url(for: song, in: musicDirectory) else {
                     throw LibraryFailure("The audio file is missing. Reimport it from Files.")
                 }
-                prepared = try AVAudioPlayer(contentsOf: url)
+                // The engine carries the equalizer and the visualizer's tap.
+                prepared = try EnginePlayer(url: url)
             }
             guard prepared.prepareToPlay(), prepared.duration.isFinite, prepared.duration > 0 else {
                 throw LibraryFailure("The audio file could not be prepared. Reimport a valid audio file.")
             }
             clearPlayer()
-            prepared.delegate = self
+            (prepared as? AVAudioPlayer)?.delegate = self
+            if let engine = prepared as? EnginePlayer {
+                let playerID = ObjectIdentifier(engine)
+                engine.onFinish = { [weak self] flag in self?.playerFinished(playerID, successfully: flag) }
+            }
             audioPlayer = prepared
             currentSong = song
             refreshRetainedModelContexts()
@@ -447,7 +452,7 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     private func clearPlayer() {
         stopPlaybackTimer()
-        audioPlayer?.delegate = nil
+        (audioPlayer as? AVAudioPlayer)?.delegate = nil
         audioPlayer?.stop()
         audioPlayer = nil
         loadedSongName = nil
@@ -463,17 +468,19 @@ class AudioPlayerManager: NSObject, AVAudioPlayerDelegate {
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         let playerID = ObjectIdentifier(player)
-        Task { @MainActor [weak self] in
-            guard let self, let current = self.audioPlayer,
-                  ObjectIdentifier(current) == playerID, !self.isPaused,
-                  !current.isPlaying, self.fadingOutPlayerID != playerID else { return }
-            if flag {
-                self.skip()
-            } else {
-                self.cancelTransition()
-                self.playbackError = "Playback stopped unexpectedly. Try again or reimport this song."
-                self.pauseLoadedSong()
-            }
+        Task { @MainActor [weak self] in self?.playerFinished(playerID, successfully: flag) }
+    }
+
+    private func playerFinished(_ playerID: ObjectIdentifier, successfully flag: Bool) {
+        guard let current = audioPlayer,
+              ObjectIdentifier(current) == playerID, !isPaused,
+              !current.isPlaying, fadingOutPlayerID != playerID else { return }
+        if flag {
+            skip()
+        } else {
+            cancelTransition()
+            playbackError = "Playback stopped unexpectedly. Try again or reimport this song."
+            pauseLoadedSong()
         }
     }
 
