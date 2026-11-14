@@ -98,8 +98,25 @@ permission behavior. Qualify those on a physical iPhone before release. Weather
 requires correctly configured WeatherKit entitlements and connectivity; failure
 does not prove a provisioning fault.
 
-Custom Home/Work zones, general playlists, streaming and dual-player crossfade
-remain deferred.
+General playlists, streaming and dual-player crossfade remain deferred.
+
+## Equalizer, visualizer and custom places
+
+The app plays through one `AVAudioEngine` (`EnginePlayer.swift`): players feed a
+mixer, a five-band equalizer, then the output. Settings (the gear button) holds
+the equalizer; gains are stored in UserDefaults and apply to all playback. The
+main view's spectrum bars read a tap after the equalizer, and the tap only runs
+while the bars are visible, playing, foregrounded and Reduce Motion is off. Unit
+tests still inject `AVAudioPlayer`, so the engine path, the equalizer's sound and
+the visualizer's level calibration have only been reviewed, not heard: qualify
+them on a device, including interruptions and route changes.
+
+The Places tab in Settings adds custom points of interest: a name, a pin, a
+radius and the music context to play there, including Home and Work. They join
+the weighted zones with a higher weight than MapKit places and follow the same
+stable-switching rules. They are stored as JSON in UserDefaults, not SwiftData.
+Zones are still only drawn after a nearby-place search succeeds, so a custom
+place does not take effect while searches are failing.
 
 
 ## Development Resources

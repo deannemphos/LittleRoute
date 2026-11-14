@@ -17,7 +17,13 @@ struct ContextClassifier {
         let context: MusicContext
         let radius: CLLocationDistance
         let score: Double
+        var isCustom = false
     }
+
+    // A place the listener pinned themselves outweighs anything inferred from
+    // MapKit: above the beach's 1.30, so it holds most of its own radius even
+    // inside a large park. Custom zones carry their own radius, not a profile's.
+    static let customSpecificity: Double = 2.0
 
     // Outside factors that may affect context beyond POI proximity.
     // Weather and speed are live; heart rate / running state are still stubs.

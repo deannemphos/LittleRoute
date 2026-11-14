@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showLibrary = false
     @State private var showFileImporter = false
     @State private var showExpandedMap = false
+    @State private var showSettings = false
     @AppStorage(AppTheme.storageKey) private var themeRaw = AppTheme.minimal.rawValue
     @ScaledMetric(relativeTo: .caption) private var arcScaleProbe: CGFloat = CurvedText.Metrics.probeBase
 
@@ -39,6 +40,8 @@ struct ContentView: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
                         }
+                        AudioVisualizerView(isPlaying: !audioManager.isPaused, tint: theme.accent)
+                            .frame(width: diameter)
                         PlaybackProgressView(audioManager: audioManager).frame(width: diameter)
                         playbackControls
                         secondaryControls
@@ -57,14 +60,14 @@ struct ContentView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
-            .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary)
-            .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary)
+            .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary || showSettings)
+            .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary && !showSettings)
             QueueDrawerView(audioManager: audioManager, isOpen: $queueDrawerOpen)
-                .accessibilityHidden(showExpandedMap || showLibrary)
-                .allowsHitTesting(!showExpandedMap && !showLibrary)
+                .accessibilityHidden(showExpandedMap || showLibrary || showSettings)
+                .allowsHitTesting(!showExpandedMap && !showLibrary && !showSettings)
             topBar
-                .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary)
-                .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary)
+                .accessibilityHidden(queueDrawerOpen || showExpandedMap || showLibrary || showSettings)
+                .allowsHitTesting(!queueDrawerOpen && !showExpandedMap && !showLibrary && !showSettings)
         }
         .safeAreaInset(edge: .bottom) {
             if storeHealth.isDegraded {
@@ -72,10 +75,13 @@ struct ContentView: View {
                     .font(.callout).padding().frame(maxWidth: .infinity, alignment: .leading)
                     .background(.regularMaterial)
                     .accessibilityIdentifier("libraryStoreWarning")
-                    .accessibilityHidden(showExpandedMap || showLibrary || queueDrawerOpen)
+                    .accessibilityHidden(showExpandedMap || showLibrary || showSettings || queueDrawerOpen)
             }
         }
         .sheet(isPresented: $showLibrary) { LibraryView() }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(contextDetector: contextDetector, locationHandler: locationHandler)
+        }
         .fullScreenCover(isPresented: $showExpandedMap) {
             ExpandedContextMap(contextDetector: contextDetector, audioManager: audioManager)
         }
@@ -229,6 +235,11 @@ struct ContentView: View {
                 .accessibilityLabel("Import songs")
                 .disabled(storeHealth.isDegraded || audioManager.isImporting)
                 Spacer()
+                Button { showSettings = true } label: {
+                    Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("Settings")
+                .accessibilityIdentifier("openSettings")
                 Button { themeRaw = theme.next.rawValue } label: {
                     Image(systemName: "paintbrush.fill").frame(minWidth: 44, minHeight: 44)
                 }

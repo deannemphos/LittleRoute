@@ -175,6 +175,43 @@ final class DetectorFlowTests {
         detector.stop()
     }
 
+    @Test func customPlaceOwnsItsGroundPersistsAndStillNeedsDwell() async throws {
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        deliver(0)
+        detector.start()
+        provider.requests[0](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .traveling)
+
+        detector.addCustomPlace(home)
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .home)
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.confirmedContext == .all)
+        #expect(provider.requests.count == 1)
+        for time in stride(from: 5.0, through: 25.0, by: 5) { deliver(time) }
+        #expect(detector.confirmedContext == .all)
+        deliver(30)
+        #expect(detector.confirmedContext == .home)
+
+        // A modifier or unknown tag in storage is ignored rather than drawn.
+        let weather = try #require(CustomPlace(name: "Sky", latitude: 0, longitude: 0, contextKey: "rainy"))
+        detector.addCustomPlace(weather)
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Home"])
+        detector.stop()
+
+        let restored = self.detector()
+        #expect(restored.customPlaces == [home, weather])
+        restored.removeCustomPlace(id: home.id)
+        #expect(self.detector().customPlaces == [weather])
+    }
+
+    @Test func visualizerBandsAndCustomPlaceValidation() throws {
+        try FeatureChecks.run()
+    }
+
     @Test func projectionWrapsAntimeridianAndRoundTripsHighLatitudes() {
         for latitude in [0.0, 60, 84] {
             let projection = ZoneProjection(latitude: latitude, longitude: 179.999)
