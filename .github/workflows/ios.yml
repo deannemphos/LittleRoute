@@ -52,7 +52,6 @@ jobs:
         env:
           DESTINATION: ${{ steps.simulator.outputs.destination }}
         run: |
-          mkdir -p LittleRoute/Music
           xcodebuild build-for-testing \
             -project LittleRoute.xcodeproj \
             -scheme LittleRoute \
