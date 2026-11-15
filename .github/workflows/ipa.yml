@@ -14,8 +14,6 @@ jobs:
 
       - name: Build
         run: |
-          # The Music folder is gitignored but referenced by the project
-          mkdir -p LittleRoute/Music
           xcodebuild build \
             -project LittleRoute.xcodeproj \
             -scheme LittleRoute \
