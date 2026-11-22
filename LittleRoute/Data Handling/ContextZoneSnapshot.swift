@@ -36,12 +36,14 @@ struct ContextZoneSnapshot {
     let generatedAt: Date
     let regions: [MapRegion]
 
-    init(geometry: ContextZoneGeometry, projection: ZoneProjection, generatedAt: Date) {
+    // knownOnly leaves unclaimed ground undrawn: without a search it is unknown, not Traveling.
+    init(geometry: ContextZoneGeometry, projection: ZoneProjection, generatedAt: Date, knownOnly: Bool = false) {
         self.geometry = geometry
         self.projection = projection
         self.generatedAt = generatedAt
         self.regions = geometry.regions.compactMap { region in
-            guard let context = MusicContext(storageKey: region.context) else { return nil }
+            guard let context = MusicContext(storageKey: region.context),
+                  !(knownOnly && region.context == ContextZoneGeometry.fallback) else { return nil }
             let holes = region.holes.map { ring in
                 let coordinates = ring.map(projection.coordinate)
                 return MKPolygon(coordinates: coordinates, count: coordinates.count)

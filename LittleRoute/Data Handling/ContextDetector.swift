@@ -89,6 +89,9 @@ final class ContextDetector {
     @ObservationIgnored private var geometryTask: Task<Void, Never>?
     @ObservationIgnored private var cache: [CachedRegion] = []
     @ObservationIgnored private var publishedSources: [GeometrySource] = []
+    // The published geometry holds only custom places because searches are
+    // failing. Their ground is known; everything else is unknown, not Traveling.
+    @ObservationIgnored private var customOnlyGeometry = false
 
     private struct GeometrySource: Equatable {
         let id: String
@@ -159,10 +162,15 @@ final class ContextDetector {
         }
         // Redraws the zones now; a switch still needs the usual stable evidence.
         // Only the last successful search's coverage is known, and only while
-        // it is fresh; otherwise the next search picks the change up.
-        guard running, let location = lastSearchLocation, let searchedAt = lastSearchSucceeded,
-              now().timeIntervalSince(searchedAt) < cacheLifetime else { return }
-        rebuildGeometry(around: location, searchedAt: searchedAt)
+        // it is fresh. Failing searches publish custom places alone, which can
+        // be redrawn at any time; otherwise the next search picks the change up.
+        guard running else { return }
+        if let location = lastSearchLocation, let searchedAt = lastSearchSucceeded,
+           now().timeIntervalSince(searchedAt) < cacheLifetime {
+            rebuildGeometry(around: location, searchedAt: searchedAt)
+        } else if customOnlyGeometry, let location = lastValidLocation {
+            rebuildGeometry(around: location, searchedAt: now(), customOnly: true)
+        }
     }
 
     func start() {
@@ -272,11 +280,17 @@ final class ContextDetector {
                 self.nextSearchAttempt = self.now().addingTimeInterval(min(120, 10 * pow(2, Double(min(self.searchFailures - 1, 4)))))
                 self.searchError = "Nearby zones could not be refreshed. Keeping available music and retrying."
                 Log.context.error("Nearby zone search failed; retaining the previous snapshot")
+                // Custom places are stored on the device, so they need no search.
+                // Only stand in for a missing or expired snapshot, never a fresh one.
+                let usable = self.snapshot.map { self.now().timeIntervalSince($0.generatedAt) <= self.cacheLifetime } ?? false
+                if !self.customPlaces.isEmpty, self.customOnlyGeometry || !usable {
+                    self.rebuildGeometry(around: location, searchedAt: self.now(), customOnly: true)
+                }
             }
         }
     }
 
-    private func rebuildGeometry(around location: CLLocation, searchedAt: Date) {
+    private func rebuildGeometry(around location: CLLocation, searchedAt: Date, customOnly: Bool = false) {
         if projection == nil || snapshot.map({ hypot($0.point(for: location).x, $0.point(for: location).y) > 5_000 }) == true {
             projection = ZoneProjection(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
         }
@@ -291,7 +305,7 @@ final class ContextDetector {
             return
         }
         var records: [String: ContextClassifier.Zone] = [:]
-        for region in cache {
+        for region in cache where !customOnly {
             for zone in region.zones { records[zone.id] = zone }
         }
         for place in customPlaces where place.isValid {
@@ -350,9 +364,11 @@ final class ContextDetector {
                     self.snapshot.flatMap { $0.geometry.context(at: $0.point(for: location)) }
                 }
                 // The snapshot is only as fresh as the search behind it.
-                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: searchedAt)
+                let snapshot = ContextZoneSnapshot(geometry: geometry, projection: projection, generatedAt: searchedAt,
+                                                   knownOnly: customOnly)
                 self.snapshot = snapshot
                 self.zones = nearby
+                self.customOnlyGeometry = customOnly
                 if let current = self.lastValidLocation, self.isUsable(current) {
                     if self.publishedSources != sources || previous != geometry.context(at: snapshot.point(for: current)) {
                         self.transition.resetCandidate()
@@ -403,6 +419,10 @@ final class ContextDetector {
                     MusicContext(storageKey: key).map { ($0, value) }
                 })
                 geographic = snapshot.geometry.context(at: point).flatMap(MusicContext.init(storageKey:))
+                if customOnlyGeometry, geographic == .traveling {
+                    geographic = nil
+                    baseScores = [:]
+                }
                 boundaryDistance = geographic.map { snapshot.geometry.inwardDistance(at: point, context: $0.storageKey) }
             }
         }
@@ -410,7 +430,8 @@ final class ContextDetector {
         guard geographic != nil || highSpeed else {
             transition.resetCandidate()
             boundaryDistance = nil
-            status = "Loading nearby zones. Keeping the current music."
+            status = customOnlyGeometry ? "Nearby zones unavailable. Keeping the current music."
+                : "Loading nearby zones. Keeping the current music."
             return
         }
         let uninterrupted = lastProcessedFix.map { location.timestamp.timeIntervalSince($0) <= 15 } ?? false
