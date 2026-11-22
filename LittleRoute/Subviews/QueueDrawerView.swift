@@ -181,7 +181,7 @@ struct QueueDrawerView: View {
                 LazyVStack(spacing: 8) {
                     // by model ID rather than songName: the store answers "which
                     // row is this", and the name is only a field that happens to
-                    // be unique since LR-16
+                    // be unique since V5
                     ForEach(audioManager.songQueue, id: \.persistentModelID) { song in
                         queueRow(song)
                     }

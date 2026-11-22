@@ -331,7 +331,7 @@ struct ContextClassifier {
     // storage key rather than the display name: which context wins a tie is
     // classification behaviour, and rewording a chip label has no business
     // reshuffling it. (It does mean today's tiebreak order differs from the
-    // pre-LR-15 one — "gym" sorts against "restaurant" now rather than "Gyms"
+    // one from before stable context keys — "gym" sorts against "restaurant" now rather than "Gyms"
     // against "Restaurants" — which only shows up on exactly equal scores.)
     static func winner(of scores: [MusicContext: Double]) -> MusicContext? {
         scores.filter { $0.value > 0 }.max { lhs, rhs in

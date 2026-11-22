@@ -446,7 +446,7 @@ private final class StubPOIProvider: POIProviding {
     var searchResult: Result<[MKMapItem], Error> = .success([])
 
     // how many searches the detector actually spent, and how wide the last one
-    // reached. LR-21 gates the first and halves the second, and neither is
+    // reached. The search gate limits the first and the radius fix halves the second, and neither is
     // visible from the detector's observable state -- the whole point of the
     // gate is that a skipped search looks identical from the outside.
     private(set) var searchCount = 0
@@ -465,7 +465,7 @@ private final class StubPOIProvider: POIProviding {
 private struct StubSearchError: Error {}
 
 // Stands in for UserDefaults: a dictionary, no app domain, no plist, nothing
-// left on disk for the next test to trip over. LR-13 writes on every state
+// left on disk for the next test to trip over. The detector persists on every state
 // transition, so without this every detector in this file would be scribbling
 // into the developer's own defaults -- and reading each other's leftovers back
 // in on start().
@@ -486,7 +486,7 @@ private final class StubStateStore: KeyValueStoring {
     func removeObject(forKey defaultName: String) { values[defaultName] = nil }
 }
 
-// A blob in the shape a pre-LR-15 build wrote: MusicContext *display* names,
+// A blob in the shape a pre-V4 build wrote: MusicContext *display* names,
 // and no version field at all. Transcribed rather than reached for, because
 // ContextDetector.PersistedState is private and — more to the point — because
 // this is a description of what old builds put on disk, and that has stopped
@@ -613,7 +613,7 @@ final class ContextDetectorTests {
 
     // MARK: Search gating
     //
-    // Searches are gated on time (LR-12) and on displacement (LR-21). These
+    // Searches are gated on time and on displacement. These
     // pin down the second: a user who hasn't moved re-scores the places
     // already in hand instead of buying the same answer again. Every fix is
     // advanced past the 10s rate limit first, so the time gate can never be
@@ -736,9 +736,9 @@ final class ContextDetectorTests {
         advance(30)
         detector.process(observation: .store)
 
-        // confirmedContext is the whole signal now — LR-08 removed the
-        // onContextChange callback this used to also assert on, because the
-        // observable property already says everything the callback did.
+        // confirmedContext is the whole signal now — this no longer asserts on
+        // the onContextChange callback, because the observable property
+        // already says everything the callback did.
         #expect(detector.confirmedContext == .store)
         #expect(detector.candidateContext == nil)
     }
@@ -991,7 +991,7 @@ final class ContextDetectorTests {
         second.stop()
     }
 
-    // LR-15 respelt every context on disk, so a blob written by the build
+    // V4 respelt every context on disk, so a blob written by the build
     // before it says "Beaches" where this one says "beach". Left to decode, all
     // of it would parse and none of it would map: the confirmed context
     // reverting to the launch default and the ledger coming back empty, while
@@ -1064,7 +1064,7 @@ final class ContextDetectorTests {
         second.stop()
     }
 
-    // LR-21's search cache is in-memory only, so the first evaluation of a new
+    // The search cache is in-memory only, so the first evaluation of a new
     // process always pays for a fresh look instead of answering from results
     // that were current in a process that no longer exists.
     @Test @MainActor func relaunchAlwaysSearchesRatherThanReusingTheCache() async {
