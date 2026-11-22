@@ -234,6 +234,42 @@ final class DetectorFlowTests {
         detector.stop()
     }
 
+    @Test func customPlaceWorksWhileSearchesFail() async throws {
+        let home = try #require(CustomPlace(name: "Home", latitude: 0, longitude: 0, contextKey: "home"))
+        let detector = detector()
+        detector.addCustomPlace(home)
+        deliver(0)
+        detector.start()
+        provider.requests[0](.failure(CLError(.network)))
+        await detector.waitForPendingGeometry()
+        #expect(detector.searchError != nil)
+        #expect(detector.zones.map(\.name) == ["Home"])
+        #expect(detector.geographicContext == .home)
+        #expect(detector.snapshot?.regions.allSatisfy { $0.context == .home } == true)
+        for time in stride(from: 5.0, through: 25.0, by: 5) { deliver(time) }
+        #expect(detector.confirmedContext == .all)
+        deliver(30)
+        #expect(detector.confirmedContext == .home)
+
+        // Outside the place, unsearched ground stays unknown rather than Traveling.
+        detector.removeCustomPlace(id: home.id)
+        let park = try #require(CustomPlace(name: "Park", latitude: 0.002, longitude: 0, contextKey: "park"))
+        detector.addCustomPlace(park)
+        await detector.waitForPendingGeometry()
+        #expect(detector.zones.map(\.name) == ["Park"])
+        for time in stride(from: 35.0, through: 300.0, by: 5) { deliver(time) }
+        #expect(detector.geographicContext == nil)
+        #expect(detector.confirmedContext == .home)
+        #expect(detector.status == "Nearby zones unavailable. Keeping the current music.")
+
+        // A successful search replaces the stand-in with the full picture.
+        let index = provider.requests.count - 1
+        provider.requests[index](.success([]))
+        await detector.waitForPendingGeometry()
+        #expect(detector.geographicContext == .traveling)
+        detector.stop()
+    }
+
     @Test func siteBudgetKeepsCustomPlacesAndNearestPOIs() async throws {
         var parks: [MKMapItem] = []
         for row in -9..<9 {

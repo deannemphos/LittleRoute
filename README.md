@@ -115,8 +115,9 @@ The Places tab in Settings adds custom points of interest: a name, a pin, a
 radius and the music context to play there, including Home and Work. They join
 the weighted zones with a higher weight than MapKit places and follow the same
 stable-switching rules. They are stored as JSON in UserDefaults, not SwiftData.
-Zones are still only drawn after a nearby-place search succeeds, so a custom
-place does not take effect while searches are failing.
+When nearby-place searches fail and there is no fresh snapshot, the zones are
+built from custom places alone: their ground still switches music, and the
+ground outside them is unknown (not Traveling), so the current music is kept.
 
 
 ## Development Resources
