@@ -7,8 +7,8 @@
 //  coin flip — SwiftData either inferred a lightweight migration or refused to
 //  open the store, and there was nowhere to say which was meant to happen.
 //  Three planned changes are breaking without that: a unique constraint on
-//  songName (LR-16), stable context keys in locations (LR-15), and an
-//  isImported flag (LR-17). This file is the mechanism they hang their stages
+//  songName, stable context keys in locations, and an isImported flag.
+//  This file is the mechanism they hang their stages
 //  off. isImported landed as V3, the context keys as V4 and the unique
 //  constraint as V5; all three are below, each with the stage that carries the
 //  existing rows across.
@@ -111,7 +111,7 @@ enum SongSchemaV1: VersionedSchema {
 // MARK: - V2 — Item dropped
 //
 // V1 minus Item, and nothing else. This used to point at the live class in
-// Song.swift; LR-17 froze it, because adding isImported to that live class is
+// Song.swift; adding V3 froze it, because adding isImported to that live class is
 // exactly the edit step 1 above warns about — left pointing at Song.swift, V2
 // would now claim the pre-flag store already had an isImported column, and the
 // V2 → V3 stage would be migrating from a version no store was ever written in.
@@ -154,7 +154,7 @@ enum SongSchemaV2: VersionedSchema {
 // V2 plus a defaulted Bool saying whether the song's mp3 was imported by the
 // user into Documents/Music, rather than shipped in the app bundle.
 //
-// This used to point at the live class in Song.swift; LR-15 froze it. The V3 →
+// This used to point at the live class in Song.swift; adding V4 froze it. The V3 →
 // V4 change is unusual in that it moves no columns at all — only the *contents*
 // of locations — so leaving V3 pointing at Song.swift would have been harmless
 // today and wrong the moment anyone touched the model again. Frozen now, while
@@ -202,7 +202,7 @@ enum SongSchemaV3: VersionedSchema {
 // rather than its display name — so that rewording a chip label stops orphaning
 // every tag in the library. See the @NOTE in MusicContext.swift.
 //
-// This used to point at the live class in Song.swift; LR-16 froze it. Putting
+// This used to point at the live class in Song.swift; adding V5 froze it. Putting
 // @Attribute(.unique) on the live songName is exactly the edit step 1 warns
 // about: left pointing at Song.swift, V4 would claim the store every current
 // build has been writing already refused duplicate names, and the V4 → V5 stage
@@ -335,7 +335,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // cannot be applied to a column that already holds duplicates. Left to
     // didMigrate the dedup would run after the constraint it exists to make
     // possible — the migration fails first, the container never opens, and
-    // since LR-10 that drops the user into the in-memory fallback with an empty
+    // that drops the user into the in-memory fallback with an empty
     // library. The rows have to be one-per-name by the time the constraint
     // lands, and willMigrate is the only hook that runs before it.
     //
@@ -472,7 +472,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
     // would be to walk MusicContext and fold [displayName: storageKey] out of
     // the live enum: half the lines, and wrong, because it asks the *current*
     // enum what the old display names were. The first person to reword a chip
-    // label — the exact change LR-15 exists to make safe — would then silently
+    // label — the exact change stable context keys exist to make safe — would then silently
     // change what this migration believes was on disk in 2026, and every user
     // still upgrading from a V3 build would lose the tags that label used to
     // name. A migration is a statement about the past, and the past does not
@@ -587,7 +587,7 @@ enum SongMigrationPlan: SchemaMigrationPlan {
             try context.save()
             // The live diagnostic. The handoff notes name this exact string as
             // the way to tell whether the V3 → V4 stage ran at all against a
-            // pre-LR-15 store, so the text is deliberately unchanged and both
+            // pre-V4 store, so the text is deliberately unchanged and both
             // numbers are deliberately readable in release — someone searching
             // Console for it is searching for the counts, not for the fact that
             // a line exists. .notice for the same reason the dedup line is:

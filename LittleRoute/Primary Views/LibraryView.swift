@@ -110,7 +110,7 @@ struct LibraryView: View {
                 } else {
                     List {
                         // Identified by the model's own ID, not by songName. The
-                        // name is unique in the store as of LR-16, so the two
+                        // name is unique in the store as of V5, so the two
                         // agree — but the ID is the store's answer to "which row
                         // is this" and the name is a field that happens to be
                         // unique, and a List whose rows carry swipe-to-delete

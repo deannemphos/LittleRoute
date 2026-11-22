@@ -16,7 +16,7 @@ import AVFoundation
 final class Song {
     var title: String
 
-    // The mp3's basename, without the extension, and since LR-16 the song's
+    // The mp3's basename, without the extension, and since SongSchemaV5 the song's
     // identity as far as the store is concerned.
     //
     // It was always being *used* as the identity — url(forSongFile:) resolves a
@@ -54,7 +54,7 @@ final class Song {
     // and write these through isTagged/setTagged and the only strings that ever
     // reach the array came out of a MusicContext.
     //
-    // Until LR-15 these were the enum's *display* names ("Gyms"), so renaming a
+    // Before SongSchemaV4 these were the enum's *display* names ("Gyms"), so renaming a
     // case for UI reasons orphaned every tag in the store. They're stable keys
     // now ("gym"); the V3 → V4 stage in SongSchema.swift rewrote the rows that
     // predate that. The property keeps its old name because renaming it would
